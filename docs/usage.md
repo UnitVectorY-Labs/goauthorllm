@@ -26,17 +26,24 @@ Or use the `--file` flag:
 goauthorllm --file draft.md
 ```
 
-## Flags and Environment Variables
+## Flags, Environment Variables, and Local Config
 
-Flags take precedence over environment variables.
+For `base_url` and `model`, precedence is:
 
-| Setting | Environment Variable | Flag | Default | Description |
-|---------|---------------------|------|---------|-------------|
-| File path | `GOAUTHORLLM_FILE` | `--file` | chooser view | Markdown file to open. Also accepted as a positional argument. |
-| Base URL | `GOAUTHORLLM_BASE_URL`, `OPENAI_BASE_URL` | `--base-url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint URL. |
-| Model | `GOAUTHORLLM_MODEL`, `OPENAI_MODEL` | `--model` | `gemma3:4b` | Model name sent to the endpoint. |
-| API key | `GOAUTHORLLM_API_KEY`, `OPENAI_API_KEY` | `--api-key` | *(empty)* | Bearer token for the endpoint. |
-| Timeout | `GOAUTHORLLM_TIMEOUT` | `--timeout` | `90s` | Request timeout as a Go duration string. |
+1. Flag
+2. Environment variable
+3. `.goauthorllm`
+4. Built-in default
+
+The `.goauthorllm` file is optional and only provides connection-setting fallbacks for `base_url` and `model`.
+
+| Setting | Environment Variable | Flag | `.goauthorllm` | Default | Description |
+|---------|---------------------|------|----------------|---------|-------------|
+| File path | `GOAUTHORLLM_FILE` | `--file` | not supported | chooser view | Markdown file to open. Also accepted as a positional argument. |
+| Base URL | `GOAUTHORLLM_BASE_URL`, `OPENAI_BASE_URL` | `--base-url` | `base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint URL. |
+| Model | `GOAUTHORLLM_MODEL`, `OPENAI_MODEL` | `--model` | `model` | `gemma3:4b` | Model name sent to the endpoint. |
+| API key | `GOAUTHORLLM_API_KEY`, `OPENAI_API_KEY` | `--api-key` | not supported | *(empty)* | Bearer token for the endpoint. |
+| Timeout | `GOAUTHORLLM_TIMEOUT` | `--timeout` | not supported | `90s` | Request timeout as a Go duration string. |
 
 ## Screens
 

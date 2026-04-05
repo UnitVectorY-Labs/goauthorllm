@@ -46,6 +46,45 @@ func TestLoadReadsLocalMessageOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadReadsBaseURLAndModelFromLocalConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".goauthorllm")
+	if err := os.WriteFile(configPath, []byte("base_url: http://file.example.com/v1\nmodel: file-model\ngenerate_prompt:\n  append: |\n    Prefer concise paragraphs.\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldwd)
+	})
+
+	t.Setenv("GOAUTHORLLM_BASE_URL", "")
+	t.Setenv("GOAUTHORLLM_MODEL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_MODEL", "")
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.BaseURL != "http://file.example.com/v1" {
+		t.Fatalf("unexpected base URL: %q", cfg.BaseURL)
+	}
+	if cfg.Model != "file-model" {
+		t.Fatalf("unexpected model: %q", cfg.Model)
+	}
+	if got := cfg.MessageOverrides[prompts.GeneratePrompt].Append; got != "Prefer concise paragraphs." {
+		t.Fatalf("unexpected generate append: %q", got)
+	}
+}
+
 func TestLoadIgnoresMissingLocalConfig(t *testing.T) {
 	dir := t.TempDir()
 
@@ -99,8 +138,40 @@ func TestLoadUsesDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadEnvOverridesLocalConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".goauthorllm")
+	if err := os.WriteFile(configPath, []byte("base_url: http://file.example.com/v1\nmodel: file-model\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	t.Setenv("GOAUTHORLLM_BASE_URL", "http://env.example.com/v1")
+	t.Setenv("GOAUTHORLLM_MODEL", "env-model")
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.BaseURL != "http://env.example.com/v1" {
+		t.Fatalf("expected env base URL, got %q", cfg.BaseURL)
+	}
+	if cfg.Model != "env-model" {
+		t.Fatalf("expected env model, got %q", cfg.Model)
+	}
+}
+
 func TestLoadFlagsOverrideEnv(t *testing.T) {
 	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".goauthorllm")
+	if err := os.WriteFile(configPath, []byte("base_url: http://file.example.com/v1\nmodel: file-model\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
 	oldwd, _ := os.Getwd()
 	_ = os.Chdir(dir)
 	t.Cleanup(func() { _ = os.Chdir(oldwd) })

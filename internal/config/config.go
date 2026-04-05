@@ -30,9 +30,21 @@ type Config struct {
 	MessageOverrides prompts.Overrides
 }
 
-// Load parses command-line flags and environment variables into a Config.
-// Environment variables are consulted for defaults; flags take precedence.
+type localConfigFile struct {
+	BaseURL          string                      `yaml:"base_url"`
+	Model            string                      `yaml:"model"`
+	MessageOverrides map[string]prompts.Override `yaml:",inline"`
+}
+
+// Load parses command-line flags, environment variables, and .goauthorllm
+// into a Config. Flags take precedence over environment variables, which take
+// precedence over .goauthorllm values.
 func Load(args []string) (Config, error) {
+	localCfg, err := loadLocalConfig(".goauthorllm")
+	if err != nil {
+		return Config{}, err
+	}
+
 	timeoutDefault := 90 * time.Second
 	if raw := firstNonEmpty(os.Getenv("GOAUTHORLLM_TIMEOUT")); raw != "" {
 		parsed, err := time.ParseDuration(raw)
@@ -43,17 +55,37 @@ func Load(args []string) (Config, error) {
 	}
 
 	cfg := Config{}
+	var baseURLFlag string
+	var modelFlag string
 	fs := flag.NewFlagSet("goauthorllm", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&cfg.FilePath, "file", firstNonEmpty(os.Getenv("GOAUTHORLLM_FILE")), "markdown document path")
-	fs.StringVar(&cfg.BaseURL, "base-url", firstNonEmpty(os.Getenv("GOAUTHORLLM_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), DefaultBaseURL), "OpenAI-compatible base URL")
-	fs.StringVar(&cfg.Model, "model", firstNonEmpty(os.Getenv("GOAUTHORLLM_MODEL"), os.Getenv("OPENAI_MODEL"), DefaultModel), "LLM model name")
+	fs.StringVar(&baseURLFlag, "base-url", "", "OpenAI-compatible base URL")
+	fs.StringVar(&modelFlag, "model", "", "LLM model name")
 	fs.StringVar(&cfg.APIKey, "api-key", firstNonEmpty(os.Getenv("GOAUTHORLLM_API_KEY"), os.Getenv("OPENAI_API_KEY")), "API key for the LLM endpoint")
 	fs.DurationVar(&cfg.Timeout, "timeout", timeoutDefault, "request timeout")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+
+	providedFlags := visitedFlags(fs)
+	cfg.BaseURL = resolveStringValue(
+		providedFlags["base-url"],
+		baseURLFlag,
+		os.Getenv("GOAUTHORLLM_BASE_URL"),
+		os.Getenv("OPENAI_BASE_URL"),
+		localCfg.BaseURL,
+		DefaultBaseURL,
+	)
+	cfg.Model = resolveStringValue(
+		providedFlags["model"],
+		modelFlag,
+		os.Getenv("GOAUTHORLLM_MODEL"),
+		os.Getenv("OPENAI_MODEL"),
+		localCfg.Model,
+		DefaultModel,
+	)
 
 	switch fs.NArg() {
 	case 0:
@@ -73,30 +105,29 @@ func Load(args []string) (Config, error) {
 		return Config{}, fmt.Errorf("timeout must be greater than zero")
 	}
 
-	messageOverrides, err := loadLocalMessageOverrides(".goauthorllm")
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.MessageOverrides = messageOverrides
+	cfg.MessageOverrides = normalizeMessageOverrides(localCfg.MessageOverrides)
 
 	return cfg, nil
 }
 
-func loadLocalMessageOverrides(path string) (prompts.Overrides, error) {
+func loadLocalConfig(path string) (localConfigFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return prompts.Overrides{}, nil
+			return localConfigFile{}, nil
 		}
-		return prompts.Overrides{}, err
+		return localConfigFile{}, err
 	}
 
-	var raw map[string]prompts.Override
+	var raw localConfigFile
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return prompts.Overrides{}, fmt.Errorf("parse %s: %w", path, err)
+		return localConfigFile{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 
-	return normalizeMessageOverrides(raw), nil
+	raw.BaseURL = strings.TrimSpace(raw.BaseURL)
+	raw.Model = strings.TrimSpace(raw.Model)
+
+	return raw, nil
 }
 
 func normalizeMessageOverrides(raw map[string]prompts.Override) prompts.Overrides {
@@ -109,6 +140,21 @@ func normalizeMessageOverrides(raw map[string]prompts.Override) prompts.Override
 		}
 	}
 	return overrides
+}
+
+func visitedFlags(fs *flag.FlagSet) map[string]bool {
+	flags := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		flags[f.Name] = true
+	})
+	return flags
+}
+
+func resolveStringValue(flagProvided bool, flagValue string, values ...string) string {
+	if flagProvided {
+		return flagValue
+	}
+	return firstNonEmpty(values...)
 }
 
 func firstNonEmpty(values ...string) string {

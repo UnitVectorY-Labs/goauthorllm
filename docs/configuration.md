@@ -6,13 +6,25 @@ nav_order: 4
 
 # Configuration
 
-goauthorllm reads an optional `.goauthorllm` file from the directory where the application is started. This YAML file customizes the embedded prompt messages without modifying Go source or rebuilding the binary.
+goauthorllm reads an optional `.goauthorllm` file from the directory where the application is started. This YAML file can provide project-local defaults for `base_url` and `model`, and it can customize the embedded prompt messages without modifying Go source or rebuilding the binary.
+
+## Precedence
+
+For `base_url` and `model`, goauthorllm resolves values in this order:
+
+1. The command-line flag (`--base-url`, `--model`)
+2. The environment variable (`GOAUTHORLLM_BASE_URL`, `GOAUTHORLLM_MODEL`, then the `OPENAI_*` aliases)
+3. The `.goauthorllm` file (`base_url`, `model`)
+4. The built-in default
+
+The `.goauthorllm` file is optional. If it is absent, or if either key is omitted, goauthorllm falls back to the higher-priority sources and then to the built-in defaults.
 
 ## When to Use It
 
 The `.goauthorllm` file is useful when:
 
 - You want a consistent tone or set of instructions for all documents in a folder
+- You want a project-local default endpoint or model without exporting shell variables
 - You need to replace a built-in prompt entirely for a specific project
 - You want to append extra guidance to the default prompts without losing the baseline
 
@@ -20,9 +32,19 @@ This file is also the recommended way to provide a document-level system message
 
 ## Structure
 
-The root keys are prompt names. Each key supports two optional fields:
+The file supports these optional top-level keys:
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `base_url` | string | Project-local default OpenAI-compatible endpoint URL |
+| `model` | string | Project-local default model name |
+| prompt name | map | Prompt override for one embedded prompt |
+
+Prompt override keys support two optional fields:
 
 ```yaml
+base_url: http://localhost:11434/v1
+model: gemma3:4b
 generate_prompt:
   append: |
     Keep the writing concise and avoid filler.
@@ -66,6 +88,8 @@ See the [Prompts](prompts) page for details on each prompt's purpose and default
 A `.goauthorllm` file for a technical documentation project:
 
 ```yaml
+base_url: https://openrouter.ai/api/v1
+model: google/gemma-3-4b-it
 generate_prompt:
   append: |
     Keep the document grounded and direct.
@@ -80,4 +104,4 @@ edit_task_prompt:
     before smaller style tweaks.
 ```
 
-If the `.goauthorllm` file is absent, the application uses the embedded defaults without changes.
+If the `.goauthorllm` file is absent, the application uses the embedded prompt defaults and the built-in connection defaults unless a flag or environment variable overrides them.
