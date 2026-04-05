@@ -1879,8 +1879,7 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 	}
 
 	feedback := ""
-	for attempt := range 3 {
-		_ = attempt
+	for range 3 {
 		messages, err := buildEditMessages(body, fileSystemMessage, history, overrides, feedback)
 		if err != nil {
 			return editSuggestionResult{Err: err}
