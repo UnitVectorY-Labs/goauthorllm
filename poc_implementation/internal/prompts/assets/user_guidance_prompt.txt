@@ -1,2 +1,0 @@
-Additional user guidance for this action:
-{{.Prompt}}

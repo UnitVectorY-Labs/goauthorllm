@@ -1,0 +1,2 @@
+Additional guidance from the author for this action:
+{{.Prompt}}

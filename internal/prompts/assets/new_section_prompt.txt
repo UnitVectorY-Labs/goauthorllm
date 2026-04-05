@@ -1,0 +1,3 @@
+Write the next logical markdown section for this document.
+Start with an appropriate heading that follows naturally from the existing content.
+Return only the text to append.

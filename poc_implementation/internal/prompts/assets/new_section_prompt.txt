@@ -1,2 +1,0 @@
-Write the next markdown section for this document.
-Start with an appropriate heading and return only the text to append.
