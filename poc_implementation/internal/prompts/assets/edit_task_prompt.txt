@@ -1,0 +1,7 @@
+Review the next content message, which is the full current document body, and return exactly one high-priority fix.
+Requirements:
+- old_text must be copied exactly from the content message.
+- old_text must match exactly one location in the content message.
+- new_text must be the replacement for that exact excerpt.
+- Prefer the smallest replacement that resolves the issue.
+- If no important fixes remain, return empty strings for both fields.

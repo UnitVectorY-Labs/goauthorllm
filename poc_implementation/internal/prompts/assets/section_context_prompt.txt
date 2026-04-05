@@ -1,0 +1,2 @@
+Existing markdown section {{.Index}} of {{.Total}}.
+Use the next content message as prior document context and preserve continuity with it.
