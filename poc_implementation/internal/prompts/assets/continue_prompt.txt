@@ -1,7 +1,0 @@
-{{if .HasExcerpt}}Continue writing exactly where the document currently stops inside {{.SectionLabel}}.
-Do not repeat the heading.
-Do not restart the section.
-Do not summarize prior text.
-The next content message is the exact trailing excerpt. Continue from it.
-Return only the markdown to append.{{else}}Start the document in markdown.
-Return only the markdown to append.{{end}}

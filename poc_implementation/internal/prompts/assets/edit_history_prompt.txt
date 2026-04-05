@@ -1,3 +1,0 @@
-Previous edit decisions in this session:
-{{range .History}}- {{.Action}} old_text={{printf "%q" .OldText}} new_text={{printf "%q" .NewText}}
-{{end}}Do not repeat skipped suggestions.
