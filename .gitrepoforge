@@ -1,0 +1,11 @@
+name: goauthorllm
+default_branch: main
+config:
+  description: "A terminal UI for using an LLM to continue, review, and copy edit Markdown documents in place."
+  license: MIT
+  language: go
+  release: release-go
+  justfile: true
+  docs:
+    enabled: true
+    domain: goauthorllm.unitvectorylabs.com
