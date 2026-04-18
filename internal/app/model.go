@@ -399,7 +399,18 @@ func (m Model) View() string {
 		view = m.renderWorkspace()
 	}
 
-	return view
+	// Pad or trim to exactly m.height lines so the diff-based renderer
+	// never sees a height change and avoids full-screen redraws.
+	lines := strings.Split(view, "\n")
+	if len(lines) < m.height {
+		for len(lines) < m.height {
+			lines = append(lines, "")
+		}
+	} else if len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // --- Stream handling ---
@@ -486,19 +497,19 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			m.focus = focusEditor
 			m.syncFocus()
 			m.scrollTextArea(&m.editor, direction, 3)
-			return true, tea.ClearScreen
+			return true, nil
 		}
 		if m.showFrontMatter && m.layout.frontMatter.contains(msg.X, msg.Y) {
 			m.focus = focusFrontMatter
 			m.syncFocus()
 			m.scrollTextArea(&m.frontMatter, direction, 3)
-			return true, tea.ClearScreen
+			return true, nil
 		}
 		if m.mode == workspaceGenerate && m.layout.prompt.contains(msg.X, msg.Y) {
 			m.focus = focusPrompt
 			m.syncFocus()
 			m.scrollTextArea(&m.prompt, direction, 3)
-			return true, tea.ClearScreen
+			return true, nil
 		}
 		switch m.focus {
 		case focusFrontMatter:
@@ -512,7 +523,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			}
 			m.scrollTextArea(&m.editor, direction, 3)
 		}
-		return true, tea.ClearScreen
+		return true, nil
 	}
 
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
@@ -585,7 +596,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		default:
 			m.scrollTextArea(&m.editor, direction, 3)
 		}
-		return true, tea.ClearScreen
+		return true, nil
 	}
 
 	if m.busy() && key.Matches(msg, m.keys.back) {
@@ -743,9 +754,6 @@ func (m *Model) updateWorkspaceInputs(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.doc.SetFrontMatter(m.frontMatter.Value())
 			m.lastEditAt = time.Now()
 		}
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && isNavigationKey(keyMsg.Type) {
-			return m, tea.Batch(cmd, tea.ClearScreen)
-		}
 		return m, cmd
 	case focusPrompt:
 		before := m.prompt.Value()
@@ -753,9 +761,6 @@ func (m *Model) updateWorkspaceInputs(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prompt, cmd = m.prompt.Update(msg)
 		if before != m.prompt.Value() {
 			m.setStatus("Generation guidance updated", "muted")
-		}
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && isNavigationKey(keyMsg.Type) {
-			return m, tea.Batch(cmd, tea.ClearScreen)
 		}
 		return m, cmd
 	default:
@@ -766,10 +771,10 @@ func (m *Model) updateWorkspaceInputs(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch keyMsg.Type {
 			case tea.KeyPgUp:
 				m.pageEditor(-1)
-				return m, tea.ClearScreen
+				return m, nil
 			case tea.KeyPgDown:
 				m.pageEditor(1)
-				return m, tea.ClearScreen
+				return m, nil
 			}
 		}
 		before := m.editor.Value()
@@ -778,9 +783,6 @@ func (m *Model) updateWorkspaceInputs(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if before != m.editor.Value() {
 			m.doc.SetBody(m.editor.Value())
 			m.lastEditAt = time.Now()
-		}
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && isNavigationKey(keyMsg.Type) {
-			return m, tea.Batch(cmd, tea.ClearScreen)
 		}
 		return m, cmd
 	}
@@ -2247,17 +2249,6 @@ func (m *Model) rawWheelDirection(msg tea.KeyMsg) (int, bool) {
 func isTextInputFocus(target focusTarget) bool {
 	switch target {
 	case focusEditor, focusPrompt, focusFrontMatter:
-		return true
-	default:
-		return false
-	}
-}
-
-func isNavigationKey(keyType tea.KeyType) bool {
-	switch keyType {
-	case tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
-		tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
-		tea.KeyCtrlHome, tea.KeyCtrlEnd:
 		return true
 	default:
 		return false
