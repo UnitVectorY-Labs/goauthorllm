@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/config"
+	"github.com/UnitVectorY-Labs/goauthorllm/internal/diff"
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/document"
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/llm"
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/prompts"
@@ -994,13 +995,19 @@ func (m Model) renderSuggestionBody() string {
 		if m.doc != nil {
 			matchCount = document.MatchCount(m.doc.Body, m.edit.suggestion.OldText)
 		}
+
+		ops := diff.Diff(m.edit.suggestion.OldText, m.edit.suggestion.NewText)
+		defaultStyle := lipgloss.NewStyle()
+		deleteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
+		insertStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E"))
+
 		parts = append(parts,
 			"",
 			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Old"),
-			m.edit.suggestion.OldText,
+			diff.FormatOld(ops, defaultStyle, deleteStyle),
 			"",
 			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("New"),
-			m.edit.suggestion.NewText,
+			diff.FormatNew(ops, defaultStyle, insertStyle),
 			"",
 			lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(fmt.Sprintf("Exact match count in document: %d", matchCount)),
 		)
