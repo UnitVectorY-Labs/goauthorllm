@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"runtime/debug"
+	"runtime"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -13,6 +16,15 @@ import (
 )
 
 var Version = "dev"
+var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+`)
+
+func buildVersionOutput(version string) string {
+	normalized := version
+	if semverRe.MatchString(normalized) && !strings.HasPrefix(normalized, "v") {
+		normalized = "v" + normalized
+	}
+	return fmt.Sprintf("%s (%s, %s/%s)", normalized, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
 
 func main() {
 	if Version == "dev" || Version == "" {
@@ -25,7 +37,7 @@ func main() {
 
 	args := os.Args[1:]
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "-version") {
-		fmt.Println(Version)
+		fmt.Printf("goauthorllm version %s\n", buildVersionOutput(Version))
 		return
 	}
 
