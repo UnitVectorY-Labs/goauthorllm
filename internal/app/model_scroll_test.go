@@ -158,9 +158,9 @@ func TestRenderWidthStaysWithinWindowWhileMovingCursor(t *testing.T) {
 	model.syncFocus()
 	model.editor.Focus()
 
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		view := model.View()
-		for _, line := range strings.Split(view, "\n") {
+		for line := range strings.SplitSeq(view, "\n") {
 			if width := lipgloss.Width(line); width > model.width {
 				t.Fatalf("rendered line wider than window: got %d want <= %d, line=%q", width, model.width, line)
 			}
@@ -179,7 +179,7 @@ func TestEditorViewHeightStaysStable(t *testing.T) {
 	input.Focus()
 
 	expected := lineCount(input.View())
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		if got := lineCount(input.View()); got != expected {
 			t.Fatalf("expected stable editor height %d, got %d on step %d", expected, got, i)
 		}

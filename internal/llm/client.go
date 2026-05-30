@@ -279,8 +279,8 @@ func (c *Client) consumeSSE(body io.Reader, send func(StreamEvent) error) error 
 			}
 			continue
 		}
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			dataLines = append(dataLines, strings.TrimSpace(after))
 		}
 	}
 
