@@ -236,12 +236,12 @@ func ReplaceUnique(body, oldText, newText string) (string, bool) {
 		return body, false
 	}
 
-	index := strings.Index(body, oldText)
-	if index == -1 {
+	before, after, ok := strings.Cut(body, oldText)
+	if !ok {
 		return body, false
 	}
 
-	return body[:index] + newText + body[index+len(oldText):], true
+	return before + newText + after, true
 }
 
 // parse splits markdown content into front matter, system message, and body.
@@ -252,13 +252,13 @@ func parse(content string) (frontMatter, systemMessage, body string) {
 	}
 
 	rest := strings.TrimPrefix(content, "---\n")
-	end := strings.Index(rest, "\n---\n")
-	if end == -1 {
+	before, after, ok := strings.Cut(rest, "\n---\n")
+	if !ok {
 		return "", "", content
 	}
 
-	frontMatter = strings.TrimRight(rest[:end], "\n")
-	body = strings.TrimLeft(rest[end+5:], "\n")
+	frontMatter = strings.TrimRight(before, "\n")
+	body = strings.TrimLeft(after, "\n")
 
 	systemMessage = extractSystemMessage(frontMatter)
 
