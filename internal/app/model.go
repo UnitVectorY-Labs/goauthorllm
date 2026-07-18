@@ -489,6 +489,12 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 		if m.screen != screenWorkspace {
 			return true, nil
 		}
+		// The textarea uses its editing cursor as its scroll position. While a
+		// generation is streaming, moving that cursor would cause a subsequent
+		// delta to be inserted into the document rather than appended to it.
+		if m.generating {
+			return true, nil
+		}
 		direction := 1
 		if isWheelUp(msg) {
 			direction = -1
@@ -588,6 +594,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	}
 
 	if direction, ok := m.rawWheelDirection(msg); ok {
+		if m.generating {
+			return true, nil
+		}
 		switch m.focus {
 		case focusFrontMatter:
 			m.scrollTextArea(&m.frontMatter, direction, 3)
@@ -1628,9 +1637,12 @@ func (m *Model) applyGenerationDelta(delta string) {
 		m.generationStarted = true
 	}
 
-	m.editor.InsertString(delta)
+	// Keep the document body as the source of truth while streaming. The
+	// textarea cursor can be moved by user input between stream events, so
+	// inserting directly into the textarea can corrupt the generated suffix.
+	m.doc.SetBody(m.doc.Body + delta)
+	m.editor.SetValue(m.doc.Body)
 	m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
-	m.doc.SetBody(m.editor.Value())
 	m.lastEditAt = time.Now()
 }
 

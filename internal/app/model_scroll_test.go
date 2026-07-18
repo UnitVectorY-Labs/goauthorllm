@@ -48,6 +48,48 @@ func TestScrollTextAreaMatchesArrowMovement(t *testing.T) {
 	}
 }
 
+func TestGenerationDeltaAppendsAfterCursorWasScrolled(t *testing.T) {
+	model := &Model{
+		doc:               &document.Document{Body: "line 1\nline 2\nline 3\nline 4"},
+		generating:        true,
+		generationStarted: true,
+		editor:            newTextarea("", true),
+	}
+	model.editor.SetWidth(40)
+	model.editor.SetHeight(2)
+	model.editor.SetValue(model.doc.Body)
+	model.editor.Focus()
+	model.editor, _ = model.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
+
+	model.scrollTextArea(&model.editor, -1, 2)
+	model.applyGenerationDelta("\nline 5")
+
+	if got, want := model.doc.Body, "line 1\nline 2\nline 3\nline 4\nline 5"; got != want {
+		t.Fatalf("generation delta was inserted at the cursor: got %q want %q", got, want)
+	}
+}
+
+func TestWheelDoesNotMoveCursorDuringGeneration(t *testing.T) {
+	model := &Model{
+		screen:     screenWorkspace,
+		focus:      focusEditor,
+		generating: true,
+		editor:     newTextarea("", true),
+		layout:     layoutState{editor: rect{x1: 0, y1: 0, x2: 80, y2: 10}},
+	}
+	model.editor.SetWidth(40)
+	model.editor.SetHeight(2)
+	model.editor.SetValue("line 1\nline 2\nline 3\nline 4")
+	model.editor.Focus()
+	model.editor, _ = model.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
+
+	model.handleMouse(tea.MouseMsg{X: 2, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+
+	if got := model.editor.Line(); got != 3 {
+		t.Fatalf("wheel moved editor cursor during generation: got line %d want 3", got)
+	}
+}
+
 func TestEnterAddsNewlineInEditor(t *testing.T) {
 	model, err := NewModel(config.Config{
 		BaseURL: "http://example.com",
