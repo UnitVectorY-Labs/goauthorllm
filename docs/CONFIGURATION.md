@@ -6,7 +6,7 @@ nav_order: 4
 
 # Configuration
 
-goauthorllm reads an optional `.goauthorllm` file from the directory where the application is started. This YAML file can provide project-local defaults for `base_url` and `model`, and it can customize the embedded prompt messages without modifying Go source or rebuilding the binary.
+goauthorllm reads an optional `.goauthorllm` file from the directory where the application is started. This YAML file can provide project-local defaults for `base_url`, `model`, `generation_model`, and `editing_model`, and it can customize the embedded prompt messages without modifying Go source or rebuilding the binary.
 
 ## Precedence
 
@@ -38,6 +38,8 @@ The file supports these optional top-level keys:
 |-----|------|---------|
 | `base_url` | string | Project-local default OpenAI-compatible endpoint URL |
 | `model` | string | Project-local default model name |
+| `generation_model` | string | Optional model for generation; falls back to `model` |
+| `editing_model` | string | Optional model for copy and directed editing; falls back to `model` |
 | prompt name | map | Prompt override for one embedded prompt |
 
 Prompt override keys support two optional fields:
@@ -45,6 +47,8 @@ Prompt override keys support two optional fields:
 ```yaml
 base_url: http://localhost:11434/v1
 model: gemma3:4b
+generation_model: optional-generation-model
+editing_model: optional-editing-model
 generate_prompt:
   append: |
     Keep the writing concise and avoid filler.
@@ -73,11 +77,13 @@ The following prompt names are available for customization:
 |------|---------|
 | `generate_prompt` | Base system prompt for generate mode |
 | `edit_prompt` | Base system prompt for edit mode |
+| `directed_edit_prompt` | System prompt dedicated to the author's directed editing task |
 | `continue_prompt` | Task instructions for continuing the current section |
 | `new_section_prompt` | Task instructions for writing the next section |
 | `section_context_prompt` | Context label for each document section |
 | `user_guidance_prompt` | Wrapper for user-provided generation guidance |
 | `edit_task_prompt` | Detailed requirements for edit suggestions |
+| `directed_edit_task_prompt` | Requirements for batches of up to 10 directed replacements |
 | `edit_history_prompt` | Template for prior edit decisions |
 | `edit_feedback_prompt` | Template for correcting invalid suggestions |
 

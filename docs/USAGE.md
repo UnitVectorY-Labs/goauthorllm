@@ -35,13 +35,15 @@ For `base_url` and `model`, precedence is:
 3. `.goauthorllm`
 4. Built-in default
 
-The `.goauthorllm` file is optional and only provides connection-setting fallbacks for `base_url` and `model`.
+The `.goauthorllm` file is optional and provides project-local fallbacks for `base_url`, the default `model`, and optional generation- and editing-specific models.
 
 | Setting | Environment Variable | Flag | `.goauthorllm` | Default | Description |
 |---------|---------------------|------|----------------|---------|-------------|
 | File path | `GOAUTHORLLM_FILE` | `--file` | not supported | chooser view | Markdown file to open. Also accepted as a positional argument. |
 | Base URL | `GOAUTHORLLM_BASE_URL`, `OPENAI_BASE_URL` | `--base-url` | `base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint URL. |
 | Model | `GOAUTHORLLM_MODEL`, `OPENAI_MODEL` | `--model` | `model` | `gemma3:4b` | Model name sent to the endpoint. |
+| Generation model | `GOAUTHORLLM_GENERATION_MODEL` | `--generation-model` | `generation_model` | value of `model` | Optional model used only for generation requests. |
+| Editing model | `GOAUTHORLLM_EDITING_MODEL` | `--editing-model` | `editing_model` | value of `model` | Optional model used for copy and directed editing requests. |
 | API key | `GOAUTHORLLM_API_KEY`, `OPENAI_API_KEY` | `--api-key` | not supported | *(empty)* | Bearer token for the endpoint. |
 | Timeout | `GOAUTHORLLM_TIMEOUT` | `--timeout` | not supported | `90s` | Request timeout as a Go duration string. |
 
@@ -72,13 +74,14 @@ This mode opens the document without starting an LLM request. Use it to read or 
 
 ## Edit Mode
 
-Edit mode reviews the document and proposes one exact replacement at a time. Before opening the workspace, select an editor and an approval policy.
+Edit mode reviews the document and proposes exact replacements. Before opening the workspace, select an editor and an approval policy.
 
 The mode, editor, and approval screens use standard list navigation: move with `↑`/`↓`, choose with `Enter`, or click an item. Custom instructions can be entered directly; use `Tab` to move to the visible **Next** button.
 
 - **Copy Editor** uses the built-in copy-editing prompt
 - **Custom Editor** accepts your directed-edit instructions, such as rewriting or removing a specified section
-- The model sends a structured suggestion containing `old_text`, `new_text`, and an estimated `remaining_rounds`
+- Copy editing returns one structured `old_text`/`new_text` suggestion at a time.
+- Directed editing returns a structured batch of up to 10 `old_text`/`new_text` suggestions so one task can change multiple document sections.
 - The application validates that `old_text` matches exactly one location
 - If a suggestion is ambiguous or stale, a separate repair request asks the model to produce a uniquely matching replacement
 - **Accept** applies the replacement, saves, and requests the next suggestion

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -98,7 +99,7 @@ func TestBuildDirectedEditMessagesIncludesCustomInstructionsSeparately(t *testin
 	}
 
 	foundInstructions := false
-	if !strings.Contains(messages[0].Content, "explicit editing instructions") {
+	if !strings.Contains(messages[0].Content, "explicit editing task") {
 		t.Fatalf("expected directed editor system prompt, got %q", messages[0].Content)
 	}
 	for _, message := range messages {
@@ -111,6 +112,15 @@ func TestBuildDirectedEditMessagesIncludesCustomInstructionsSeparately(t *testin
 	}
 	if !foundInstructions {
 		t.Fatal("expected separate directed editing instructions")
+	}
+	foundDirectedTask := false
+	for _, message := range messages {
+		if message.Name == "task_instructions" && strings.Contains(message.Content, "up to 10 suggestions") && strings.Contains(message.Content, "Do not include unrelated copy edits") {
+			foundDirectedTask = true
+		}
+	}
+	if !foundDirectedTask {
+		t.Fatal("expected multi-change directed task instructions")
 	}
 }
 
@@ -125,5 +135,20 @@ func TestBuildGenerationMessagesReturnsPromptRenderErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), string(prompts.ContinuePrompt)) {
 		t.Fatalf("expected prompt name in error, got %v", err)
+	}
+}
+
+func TestValidateDirectedSuggestionsRejectsOverlappingReplacements(t *testing.T) {
+	body := "Alpha beta gamma."
+	suggestions := []editSuggestion{
+		{OldText: "Alpha beta", NewText: "First"},
+		{OldText: "beta gamma", NewText: "Second"},
+	}
+	_, feedback, err := validateDirectedSuggestions(context.Background(), nil, body, suggestions, prompts.Overrides{})
+	if err != nil {
+		t.Fatalf("validate directed suggestions: %v", err)
+	}
+	if !strings.Contains(feedback, "overlap") {
+		t.Fatalf("expected overlap feedback, got %q", feedback)
 	}
 }

@@ -1,0 +1,12 @@
+Carry out the author's directed editing instructions on the full document in the next content message.
+
+Return as many replacements as are needed to complete the requested task across different parts of the document, up to 10 suggestions in this response.
+
+Requirements for every suggestion:
+- old_text must be copied character-for-character from the document.
+- old_text must match exactly one location in the document.
+- new_text must be the complete replacement for that excerpt.
+- Suggestions must not overlap one another.
+- Include only changes required by the author's instructions. Do not include unrelated copy edits or general improvements.
+
+Set remaining_rounds to your conservative estimate of how many additional batches will be required after this batch. If the task is complete after this batch, set it to 0. If the task is already complete, return an empty suggestions array and 0.

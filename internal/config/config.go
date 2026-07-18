@@ -25,6 +25,8 @@ type Config struct {
 	FilePath         string
 	BaseURL          string
 	Model            string
+	GenerationModel  string
+	EditingModel     string
 	APIKey           string
 	Timeout          time.Duration
 	MessageOverrides prompts.Overrides
@@ -33,6 +35,8 @@ type Config struct {
 type localConfigFile struct {
 	BaseURL          string                      `yaml:"base_url"`
 	Model            string                      `yaml:"model"`
+	GenerationModel  string                      `yaml:"generation_model"`
+	EditingModel     string                      `yaml:"editing_model"`
 	MessageOverrides map[string]prompts.Override `yaml:",inline"`
 }
 
@@ -57,11 +61,15 @@ func Load(args []string) (Config, error) {
 	cfg := Config{}
 	var baseURLFlag string
 	var modelFlag string
+	var generationModelFlag string
+	var editingModelFlag string
 	fs := flag.NewFlagSet("goauthorllm", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&cfg.FilePath, "file", firstNonEmpty(os.Getenv("GOAUTHORLLM_FILE")), "markdown document path")
 	fs.StringVar(&baseURLFlag, "base-url", "", "OpenAI-compatible base URL")
 	fs.StringVar(&modelFlag, "model", "", "LLM model name")
+	fs.StringVar(&generationModelFlag, "generation-model", "", "model for generation requests (defaults to --model)")
+	fs.StringVar(&editingModelFlag, "editing-model", "", "model for editing requests (defaults to --model)")
 	fs.StringVar(&cfg.APIKey, "api-key", firstNonEmpty(os.Getenv("GOAUTHORLLM_API_KEY"), os.Getenv("OPENAI_API_KEY")), "API key for the LLM endpoint")
 	fs.DurationVar(&cfg.Timeout, "timeout", timeoutDefault, "request timeout")
 
@@ -85,6 +93,20 @@ func Load(args []string) (Config, error) {
 		os.Getenv("OPENAI_MODEL"),
 		localCfg.Model,
 		DefaultModel,
+	)
+	cfg.GenerationModel = resolveStringValue(
+		providedFlags["generation-model"],
+		generationModelFlag,
+		os.Getenv("GOAUTHORLLM_GENERATION_MODEL"),
+		localCfg.GenerationModel,
+		cfg.Model,
+	)
+	cfg.EditingModel = resolveStringValue(
+		providedFlags["editing-model"],
+		editingModelFlag,
+		os.Getenv("GOAUTHORLLM_EDITING_MODEL"),
+		localCfg.EditingModel,
+		cfg.Model,
 	)
 
 	switch fs.NArg() {
@@ -126,6 +148,8 @@ func loadLocalConfig(path string) (localConfigFile, error) {
 
 	raw.BaseURL = strings.TrimSpace(raw.BaseURL)
 	raw.Model = strings.TrimSpace(raw.Model)
+	raw.GenerationModel = strings.TrimSpace(raw.GenerationModel)
+	raw.EditingModel = strings.TrimSpace(raw.EditingModel)
 
 	return raw, nil
 }

@@ -12,18 +12,19 @@ import (
 type Name string
 
 const (
-	GeneratePrompt       Name = "generate_prompt"
-	EditPrompt           Name = "edit_prompt"
-	DirectedEditPrompt   Name = "directed_edit_prompt"
-	SectionContextPrompt Name = "section_context_prompt"
-	ContinuePrompt       Name = "continue_prompt"
-	NewSectionPrompt     Name = "new_section_prompt"
-	UserGuidancePrompt   Name = "user_guidance_prompt"
-	EditTaskPrompt       Name = "edit_task_prompt"
-	EditHistoryPrompt    Name = "edit_history_prompt"
-	EditFeedbackPrompt   Name = "edit_feedback_prompt"
-	EditApprovalPrompt   Name = "edit_approval_prompt"
-	EditRepairPrompt     Name = "edit_repair_prompt"
+	GeneratePrompt         Name = "generate_prompt"
+	EditPrompt             Name = "edit_prompt"
+	DirectedEditPrompt     Name = "directed_edit_prompt"
+	DirectedEditTaskPrompt Name = "directed_edit_task_prompt"
+	SectionContextPrompt   Name = "section_context_prompt"
+	ContinuePrompt         Name = "continue_prompt"
+	NewSectionPrompt       Name = "new_section_prompt"
+	UserGuidancePrompt     Name = "user_guidance_prompt"
+	EditTaskPrompt         Name = "edit_task_prompt"
+	EditHistoryPrompt      Name = "edit_history_prompt"
+	EditFeedbackPrompt     Name = "edit_feedback_prompt"
+	EditApprovalPrompt     Name = "edit_approval_prompt"
+	EditRepairPrompt       Name = "edit_repair_prompt"
 )
 
 // Override customizes an embedded prompt.

@@ -335,8 +335,8 @@ func TestAutomaticReviewKeepsSuggestionVisibleWhileChecking(t *testing.T) {
 	model.edit.approval = approvalAutomatic
 	model.edit.requestID = 7
 
-	suggestion := &editSuggestion{OldText: "Lena walk", NewText: "Lena walks", RemainingRounds: 1}
-	_, cmd := model.handleEditMsg(editMsg{id: 7, result: editSuggestionResult{Suggestion: suggestion}})
+	suggestion := editSuggestion{OldText: "Lena walk", NewText: "Lena walks", RemainingRounds: 1}
+	_, cmd := model.handleEditMsg(editMsg{id: 7, result: editSuggestionResult{Suggestions: []editSuggestion{suggestion}, RemainingRounds: 1}})
 	if cmd == nil {
 		t.Fatal("expected automatic approval command")
 	}
@@ -354,11 +354,15 @@ func TestAutomaticReviewKeepsSuggestionVisibleWhileChecking(t *testing.T) {
 }
 
 func TestRejectedAutomaticReviewRetainsSuggestion(t *testing.T) {
-	model := &Model{edit: editState{
-		requestID:  3,
-		reviewing:  true,
-		suggestion: &editSuggestion{OldText: "old", NewText: "new"},
-	}}
+	modelValue, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model := &modelValue
+	model.mode = workspaceEdit
+	model.edit.requestID = 3
+	model.edit.reviewing = true
+	model.edit.suggestion = &editSuggestion{OldText: "old", NewText: "new"}
 	model.handleEditApprovalMsg(editApprovalMsg{id: 3, approved: false})
 	if model.edit.suggestion == nil {
 		t.Fatal("rejected automatic review should keep the suggestion for manual review")
@@ -537,5 +541,124 @@ func TestCustomInstructionsCanBeHoveredAndClicked(t *testing.T) {
 	model.handleMouse(tea.MouseMsg{X: region.x1 + 2, Y: region.y1 + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	if model.focus != focusEditInstructions {
 		t.Fatalf("expected click to focus custom instructions, got %v", model.focus)
+	}
+}
+
+func TestAutomaticBatchPreservesHistoryTabUntilDecisionRequired(t *testing.T) {
+	client := llm.NewClient("http://example.com", "test-model", "", time.Second)
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, client)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.screen = screenWorkspace
+	model.mode = workspaceEdit
+	model.workspaceTab = 1
+	model.focus = focusHistoryPane
+	model.doc = &document.Document{Path: "test.md", Body: "First old. Second old."}
+	model.editor.SetValue(model.doc.Body)
+	model.edit.approval = approvalAutomatic
+	model.edit.kind = editKindDirected
+	model.edit.requestID = 4
+
+	suggestions := []editSuggestion{{OldText: "First old", NewText: "First new"}, {OldText: "Second old", NewText: "Second new"}}
+	_, cmd := model.handleEditMsg(editMsg{id: 4, result: editSuggestionResult{Suggestions: suggestions, RemainingRounds: 0}})
+	if cmd == nil || model.workspaceTab != 1 {
+		t.Fatalf("automatic batch should review without leaving History: cmd=%v tab=%d", cmd != nil, model.workspaceTab)
+	}
+	model.handleEditApprovalMsg(editApprovalMsg{id: 4, approved: false})
+	if model.workspaceTab != 0 {
+		t.Fatalf("rejected automatic suggestion should open Suggestion tab, got %d", model.workspaceTab)
+	}
+}
+
+func TestApproveAllAppliesEntireDirectedBatch(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "directed.md")
+	if err := os.WriteFile(path, []byte("First old. Second old."), 0o644); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+	doc, err := document.Load(path)
+	if err != nil {
+		t.Fatalf("load document: %v", err)
+	}
+	model.screen = screenWorkspace
+	model.mode = workspaceEdit
+	model.workspaceTab = 1
+	model.doc = doc
+	model.editor.SetValue(doc.Body)
+	model.edit.kind = editKindDirected
+	model.edit.approval = approvalAll
+	model.edit.requestID = 2
+	suggestions := []editSuggestion{{OldText: "First old", NewText: "First new"}, {OldText: "Second old", NewText: "Second new"}}
+
+	_, cmd := model.handleEditMsg(editMsg{id: 2, result: editSuggestionResult{Suggestions: suggestions, RemainingRounds: 0}})
+	if cmd != nil {
+		t.Fatal("expected completed directed batch without another request")
+	}
+	if model.doc.Body != "First new. Second new." || len(model.edit.history) != 2 {
+		t.Fatalf("batch was not fully applied: body=%q history=%#v", model.doc.Body, model.edit.history)
+	}
+	if model.workspaceTab != 1 {
+		t.Fatalf("approve-all batch should preserve History tab, got %d", model.workspaceTab)
+	}
+}
+
+func TestSkippingOneDirectedBatchItemDoesNotMarkTaskComplete(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "directed.md")
+	if err := os.WriteFile(path, []byte("First old. Second old."), 0o644); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+	model.doc, err = document.Load(path)
+	if err != nil {
+		t.Fatalf("load document: %v", err)
+	}
+	model.editor.SetValue(model.doc.Body)
+	model.screen = screenWorkspace
+	model.mode = workspaceEdit
+	model.edit.kind = editKindDirected
+	model.edit.approval = approvalManual
+	model.edit.requestID = 3
+
+	suggestions := []editSuggestion{{OldText: "First old", NewText: "First new"}, {OldText: "Second old", NewText: "Second new"}}
+	model.handleEditMsg(editMsg{id: 3, result: editSuggestionResult{Suggestions: suggestions, RemainingRounds: 0}})
+	model.runAction(actionSkipSuggestion)
+	if model.edit.suggestion == nil || model.edit.suggestion.OldText != "Second old" {
+		t.Fatalf("expected the second queued suggestion after skip, got %#v", model.edit.suggestion)
+	}
+	if !model.applySuggestion(*model.edit.suggestion, "accepted") {
+		t.Fatal("expected the remaining suggestion to apply")
+	}
+	model.finishEditBatch("Reviewed batch", false)
+	if strings.Contains(model.statusText, "task complete") {
+		t.Fatal("a batch with a skipped directed change must not mark the directed task complete")
+	}
+}
+
+func TestSpecializedModelClientsAndLabels(t *testing.T) {
+	defaultClient := llm.NewClient("http://example.com", "default-model", "", time.Second)
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "default-model", GenerationModel: "generation-model", EditingModel: "editing-model", Timeout: time.Second}, defaultClient)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	if model.generationClient == defaultClient || model.editingClient == defaultClient || model.generationClient == model.editingClient {
+		t.Fatal("expected separate clients for specialized models")
+	}
+	model.screen = screenWorkspace
+	model.mode = workspaceGenerate
+	if got := model.activeModelName(); got != "generation-model" {
+		t.Fatalf("unexpected generation model label: %q", got)
+	}
+	model.mode = workspaceEdit
+	if got := model.activeModelName(); got != "editing-model" {
+		t.Fatalf("unexpected editing model label: %q", got)
 	}
 }

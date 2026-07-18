@@ -20,7 +20,7 @@ In **generate mode** the message sequence typically includes:
 5. Optional user guidance from the prompt pane
 
 In **edit mode** the suggestion message sequence includes:
-1. A system prompt for copy editing
+1. A system prompt specific to either copy editing or the author's directed editing task
 2. Document-level instructions
 3. Task requirements for structured output
 4. The full document body
@@ -46,7 +46,7 @@ Sets the assistant's role for edit mode. Instructs the model to review the docum
 
 ### directed_edit_prompt
 
-Sets the assistant role for custom directed edits. It limits suggestions to changes required by the author's instructions and stops once those instructions are satisfied.
+Sets the assistant role for custom directed edits. It makes the author's task the sole priority, explicitly excludes unrelated copy editing, and stops once the task is satisfied.
 
 [View source](https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/internal/prompts/assets/directed_edit_prompt.txt)
 
@@ -85,6 +85,12 @@ Template variable: `Prompt`
 Detailed requirements for edit suggestions. Instructs the model on how to format the `old_text` and `new_text` fields and what constitutes a valid suggestion.
 
 [View source](https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/internal/prompts/assets/edit_task_prompt.txt)
+
+### directed_edit_task_prompt
+
+Defines the structured batch used by directed editing: up to 10 validated, non-overlapping `old_text`/`new_text` replacements spanning different parts of the document.
+
+[View source](https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/internal/prompts/assets/directed_edit_task_prompt.txt)
 
 ### edit_history_prompt
 

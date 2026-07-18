@@ -237,9 +237,10 @@ type editHistoryEntry struct {
 }
 
 type editSuggestionResult struct {
-	Suggestion *editSuggestion
-	Note       string
-	Err        error
+	Suggestions     []editSuggestion
+	RemainingRounds int
+	Note            string
+	Err             error
 }
 
 type editMsg struct {
@@ -254,24 +255,30 @@ type editApprovalMsg struct {
 }
 
 type editState struct {
-	suggestion    *editSuggestion
-	history       []editHistoryEntry
-	requesting    bool
-	requestID     int
-	requestCancel context.CancelFunc
-	reviewing     bool
-	kind          editKind
-	approval      approvalMode
-	instructions  ta.Model
-	showHistory   bool
-	historyIndex  int
+	suggestion      *editSuggestion
+	pending         []editSuggestion
+	batchTotal      int
+	batchPosition   int
+	batchSkipped    bool
+	remainingRounds int
+	history         []editHistoryEntry
+	requesting      bool
+	requestID       int
+	requestCancel   context.CancelFunc
+	reviewing       bool
+	kind            editKind
+	approval        approvalMode
+	instructions    ta.Model
+	showHistory     bool
+	historyIndex    int
 }
 
 // Model is the top-level Bubble Tea model for goauthorllm.
 type Model struct {
-	cfg    config.Config
-	client *llm.Client
-	cwd    string
+	cfg              config.Config
+	generationClient *llm.Client
+	editingClient    *llm.Client
+	cwd              string
 
 	screen     screenState
 	screenPath []screenState
@@ -326,11 +333,12 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOrange))
 
 	m := Model{
-		cfg:    cfg,
-		client: client,
-		cwd:    cwd,
-		mode:   workspaceGenerate,
-		spin:   spin,
+		cfg:              cfg,
+		generationClient: client,
+		editingClient:    client,
+		cwd:              cwd,
+		mode:             workspaceGenerate,
+		spin:             spin,
 		keys: keyMap{
 			focusNext:  key.NewBinding(key.WithKeys("tab")),
 			focusPrev:  key.NewBinding(key.WithKeys("shift+tab")),
@@ -353,6 +361,12 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 		statusLevel: "info",
 		lastEditAt:  time.Now(),
 		hover:       focusTarget(-1),
+	}
+	if cfg.GenerationModel != "" && cfg.GenerationModel != cfg.Model {
+		m.generationClient = llm.NewClient(cfg.BaseURL, cfg.GenerationModel, cfg.APIKey, cfg.Timeout)
+	}
+	if cfg.EditingModel != "" && cfg.EditingModel != cfg.Model {
+		m.editingClient = llm.NewClient(cfg.BaseURL, cfg.EditingModel, cfg.APIKey, cfg.Timeout)
 	}
 
 	m.frontMatter = newTextarea("File metadata and document-specific instructions...", false)
@@ -623,32 +637,22 @@ func (m *Model) handleEditMsg(msg editMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.edit.suggestion = msg.result.Suggestion
-	if msg.result.Suggestion == nil {
+	if len(msg.result.Suggestions) == 0 {
+		m.edit.suggestion = nil
+		m.edit.pending = nil
+		m.edit.batchTotal = 0
+		m.edit.batchPosition = 0
+		m.edit.batchSkipped = false
+		m.edit.remainingRounds = 0
 		m.setStatus(firstNonEmptyString(msg.result.Note, "No edit suggestion available"), "muted")
 		return m, nil
 	}
-	m.workspaceTab = 0
-
-	if m.edit.approval == approvalAll {
-		suggestion := *msg.result.Suggestion
-		if !m.applySuggestion(suggestion, "approved-all") {
-			m.setStatus("Automatic edit could not be applied; requesting a repaired suggestion", "error")
-			return m, m.requestEditSuggestion("Repairing an automatic edit suggestion...")
-		}
-		if suggestion.RemainingRounds <= 0 {
-			m.setStatus("Applied final automatic edit; no further rounds are needed", "success")
-			return m, nil
-		}
-		return m, m.requestEditSuggestion("Applied automatic edit and requesting the next suggestion...")
-	}
-
-	if m.edit.approval == approvalAutomatic {
-		m.setStatus("Suggestion ready; checking whether it is safe to apply automatically...", "info")
-		return m, m.requestEditApproval(*msg.result.Suggestion)
-	}
-	m.setStatus(firstNonEmptyString(msg.result.Note, "Suggestion ready for review"), "success")
-	return m, nil
+	m.edit.pending = append([]editSuggestion(nil), msg.result.Suggestions...)
+	m.edit.batchTotal = len(m.edit.pending)
+	m.edit.batchPosition = 0
+	m.edit.batchSkipped = false
+	m.edit.remainingRounds = msg.result.RemainingRounds
+	return m, m.startNextSuggestion(msg.result.Note)
 }
 
 func (m *Model) handleEditApprovalMsg(msg editApprovalMsg) (tea.Model, tea.Cmd) {
@@ -658,6 +662,7 @@ func (m *Model) handleEditApprovalMsg(msg editApprovalMsg) (tea.Model, tea.Cmd) 
 	m.edit.reviewing = false
 	m.edit.requestCancel = nil
 	if msg.err != nil {
+		m.switchWorkspaceTab(0)
 		if msg.err == context.Canceled {
 			m.setStatus("Automatic review canceled; suggestion kept for manual review", "muted")
 		} else {
@@ -666,6 +671,7 @@ func (m *Model) handleEditApprovalMsg(msg editApprovalMsg) (tea.Model, tea.Cmd) 
 		return m, nil
 	}
 	if !msg.approved {
+		m.switchWorkspaceTab(0)
 		m.setStatus("Automatic review requires your decision; suggestion remains visible", "muted")
 		return m, nil
 	}
@@ -677,13 +683,62 @@ func (m *Model) handleEditApprovalMsg(msg editApprovalMsg) (tea.Model, tea.Cmd) 
 		m.setStatus("Approved suggestion became stale; requesting a replacement", "error")
 		return m, m.requestEditSuggestion("Repairing a stale edit suggestion...")
 	}
-	if suggestion.RemainingRounds <= 0 {
-		m.switchWorkspaceTab(1)
-		m.edit.historyIndex = len(m.edit.history) - 1
-		m.setStatus("Applied final automatically approved edit", "success")
-		return m, nil
+	return m, m.continueEditFlow("Applied automatically approved edit", false)
+}
+
+func (m *Model) startNextSuggestion(note string) tea.Cmd {
+	if len(m.edit.pending) == 0 {
+		return m.finishEditBatch("Editing batch complete", false)
 	}
-	return m, m.requestEditSuggestion("Applied approved edit and requesting the next suggestion...")
+	suggestion := m.edit.pending[0]
+	m.edit.pending = m.edit.pending[1:]
+	m.edit.batchPosition++
+	m.edit.suggestion = &suggestion
+
+	if m.edit.approval == approvalAll {
+		if !m.applySuggestion(suggestion, "approved-all") {
+			m.setStatus("Automatic edit could not be applied; requesting a repaired batch", "error")
+			return m.requestEditSuggestion("Repairing an automatic edit batch...")
+		}
+		return m.continueEditFlow("Applied directed edit", false)
+	}
+	if m.edit.approval == approvalAutomatic {
+		m.setStatus(m.editProgressLabel("Checking automatic approval"), "info")
+		return m.requestEditApproval(suggestion)
+	}
+	m.switchWorkspaceTab(0)
+	m.setStatus(firstNonEmptyString(note, m.editProgressLabel("Suggestion ready for review")), "success")
+	return nil
+}
+
+func (m *Model) continueEditFlow(status string, skipped bool) tea.Cmd {
+	if skipped {
+		m.edit.batchSkipped = true
+	}
+	if len(m.edit.pending) > 0 {
+		return m.startNextSuggestion("")
+	}
+	return m.finishEditBatch(status, skipped)
+}
+
+func (m *Model) finishEditBatch(status string, skipped bool) tea.Cmd {
+	m.edit.suggestion = nil
+	if m.edit.kind == editKindDirected && m.edit.remainingRounds <= 0 && !skipped && !m.edit.batchSkipped {
+		m.setStatus(status+"; directed editing task complete", "success")
+		return nil
+	}
+	if m.edit.kind == editKindCopy && m.edit.approval != approvalManual && m.edit.remainingRounds <= 0 {
+		m.setStatus(status+"; no further rounds are needed", "success")
+		return nil
+	}
+	return m.requestEditSuggestion(status + "; requesting the next editing batch...")
+}
+
+func (m *Model) editProgressLabel(prefix string) string {
+	if m.edit.batchTotal <= 1 {
+		return prefix
+	}
+	return fmt.Sprintf("%s (%d of %d)", prefix, m.edit.batchPosition, m.edit.batchTotal)
 }
 
 // --- Mouse handling ---
@@ -1457,11 +1512,18 @@ func (m *Model) renderTabs(labels []string, y int) string {
 
 func (m Model) renderSuggestionBody() string {
 	var parts []string
-	parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(editHelpText()))
+	parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(editHelpText(m.edit.kind)))
+	if m.edit.batchTotal > 1 && m.edit.suggestion != nil {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color(colorBlueLight)).Render(fmt.Sprintf("Directed change %d of %d in this batch", m.edit.batchPosition, m.edit.batchTotal)))
+	}
 
 	switch {
 	case m.edit.requesting:
-		parts = append(parts, "", lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1")).Render("Requesting the next highest-priority fix..."))
+		message := "Requesting the next highest-priority copy edit..."
+		if m.edit.kind == editKindDirected {
+			message = "Finding the changes required by your directed editing task..."
+		}
+		parts = append(parts, "", lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1")).Render(message))
 	case m.edit.suggestion == nil:
 		parts = append(parts, "", lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1")).Render("No active suggestion. Use Refresh to ask for another pass."))
 	default:
@@ -1740,9 +1802,21 @@ func (m Model) renderStatusBar() string {
 	lines := []string{
 		lipgloss.NewStyle().Foreground(statusForeground(m.statusLevel)).Render(truncateToWidth(status, width)),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render(truncateToWidth("Endpoint "+m.cfg.BaseURL, width)),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render(truncateToWidth("Model "+m.cfg.Model, width)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render(truncateToWidth("Model "+m.activeModelName(), width)),
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) activeModelName() string {
+	if m.screen == screenEditOptions || m.screen == screenApprovalPicker || (m.screen == screenWorkspace && m.mode == workspaceEdit) {
+		if m.cfg.EditingModel != "" {
+			return m.cfg.EditingModel
+		}
+	}
+	if m.screen == screenWorkspace && m.mode == workspaceGenerate && m.cfg.GenerationModel != "" {
+		return m.cfg.GenerationModel
+	}
+	return m.cfg.Model
 }
 
 type actionButton struct {
@@ -1863,13 +1937,15 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 			m.appendEditHistory("skipped", *m.edit.suggestion)
 		}
 		m.edit.suggestion = nil
-		return m.requestEditSuggestion("Requesting the next edit suggestion...")
+		return m.continueEditFlow("Skipped suggestion", true)
 
 	case actionRefreshSuggestion:
 		if m.mode != workspaceEdit || m.doc == nil || m.edit.requesting || m.edit.reviewing {
 			return nil
 		}
-		return m.requestEditSuggestion("Refreshing edit suggestion...")
+		m.edit.pending = nil
+		m.edit.suggestion = nil
+		return m.requestEditSuggestion("Refreshing edit suggestions...")
 
 	case actionSave:
 		if m.doc == nil {
@@ -1951,6 +2027,11 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		m.edit.kind = editKindCopy
 		m.edit.approval = approvalManual
 		m.edit.suggestion = nil
+		m.edit.pending = nil
+		m.edit.batchTotal = 0
+		m.edit.batchPosition = 0
+		m.edit.batchSkipped = false
+		m.edit.remainingRounds = 0
 		m.edit.history = nil
 		m.edit.historyIndex = 0
 		m.edit.requesting = false
@@ -2095,7 +2176,11 @@ func (m *Model) enterWorkspace(mode workspaceMode) tea.Cmd {
 	m.setStatus("Opened "+filepath.Base(m.doc.Path)+" in "+mode.label()+" mode", "success")
 
 	if mode == workspaceEdit {
-		return m.requestEditSuggestion("Reviewing the document for the highest-priority fix...")
+		status := "Reviewing the document for the highest-priority copy edit..."
+		if m.edit.kind == editKindDirected {
+			status = "Carrying out the directed editing task..."
+		}
+		return m.requestEditSuggestion(status)
 	}
 	return nil
 }
@@ -2161,7 +2246,7 @@ func (m *Model) saveBeforeLeave(action string) error {
 // --- Generation ---
 
 func (m *Model) startGeneration(mode generationMode) tea.Cmd {
-	if m.doc == nil || m.client == nil {
+	if m.doc == nil || m.generationClient == nil {
 		return nil
 	}
 
@@ -2192,7 +2277,7 @@ func (m *Model) startGeneration(mode generationMode) tea.Cmd {
 
 	id := m.generationID
 	timeout := m.cfg.Timeout
-	client := m.client
+	client := m.generationClient
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	m.generationCancel = cancel
@@ -2234,7 +2319,7 @@ func (m *Model) applyGenerationDelta(delta string) {
 // --- Edit suggestions ---
 
 func (m *Model) requestEditSuggestion(status string) tea.Cmd {
-	if m.doc == nil || m.client == nil {
+	if m.doc == nil || m.editingClient == nil {
 		return nil
 	}
 
@@ -2243,6 +2328,10 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 	m.edit.requesting = true
 	m.edit.requestID++
 	m.edit.suggestion = nil
+	m.edit.pending = nil
+	m.edit.batchTotal = 0
+	m.edit.batchPosition = 0
+	m.edit.batchSkipped = false
 	m.setStatus(status, "info")
 
 	id := m.edit.requestID
@@ -2252,7 +2341,7 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 	history := append([]editHistoryEntry(nil), m.edit.history...)
 	kind := m.edit.kind
 	instructions := m.edit.instructions.Value()
-	client := m.client
+	client := m.editingClient
 	overrides := m.cfg.MessageOverrides
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -2266,7 +2355,7 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 }
 
 func (m *Model) requestEditApproval(suggestion editSuggestion) tea.Cmd {
-	if m.doc == nil || m.client == nil {
+	if m.doc == nil || m.editingClient == nil {
 		return nil
 	}
 	m.edit.reviewing = true
@@ -2274,7 +2363,7 @@ func (m *Model) requestEditApproval(suggestion editSuggestion) tea.Cmd {
 	body := m.doc.Body
 	kind := m.edit.kind
 	instructions := m.edit.instructions.Value()
-	client := m.client
+	client := m.editingClient
 	overrides := m.cfg.MessageOverrides
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.Timeout)
 	m.edit.requestCancel = cancel
@@ -2296,8 +2385,7 @@ func (m *Model) acceptSuggestion() tea.Cmd {
 	}
 
 	m.edit.suggestion = nil
-
-	return m.requestEditSuggestion("Applied edit and requesting the next suggestion...")
+	return m.continueEditFlow("Applied edit", false)
 }
 
 func (m *Model) applySuggestion(suggestion editSuggestion, action string) bool {
@@ -2515,11 +2603,8 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 	if strings.TrimSpace(body) == "" {
 		return editSuggestionResult{Note: "The document is empty. Add content before requesting edits."}
 	}
-	doneNote := "No further high-priority copy edits suggested."
-	suggestionNote := "Suggested one copy edit with a unique exact match"
 	if kind == editKindDirected {
-		doneNote = "The requested directed edit is complete."
-		suggestionNote = "Suggested one directed edit with a unique exact match"
+		return fetchDirectedEditSuggestions(ctx, client, body, fileSystemMessage, history, overrides, instructions)
 	}
 
 	feedback := ""
@@ -2539,7 +2624,7 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 			continue
 		}
 		if suggestion.empty() {
-			return editSuggestionResult{Note: doneNote}
+			return editSuggestionResult{Note: "No further high-priority copy edits suggested."}
 		}
 		if suggestion.OldText == suggestion.NewText {
 			feedback = "old_text and new_text must differ unless both are empty."
@@ -2563,12 +2648,86 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 		}
 
 		return editSuggestionResult{
-			Suggestion: &suggestion,
-			Note:       suggestionNote,
+			Suggestions:     []editSuggestion{suggestion},
+			RemainingRounds: suggestion.RemainingRounds,
+			Note:            "Suggested one copy edit with a unique exact match",
 		}
 	}
 
 	return editSuggestionResult{Err: fmt.Errorf("could not obtain a unique edit suggestion")}
+}
+
+type directedEditBatch struct {
+	Suggestions     []editSuggestion `json:"suggestions"`
+	RemainingRounds int              `json:"remaining_rounds"`
+}
+
+func fetchDirectedEditSuggestions(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, instructions string) editSuggestionResult {
+	feedback := ""
+	for range 3 {
+		messages, err := buildEditMessagesWithOptions(body, fileSystemMessage, history, overrides, feedback, editKindDirected, instructions)
+		if err != nil {
+			return editSuggestionResult{Err: err}
+		}
+		raw, err := client.StructuredChat(ctx, messages, "directed_edit_suggestions", directedEditBatchSchema)
+		if err != nil {
+			return editSuggestionResult{Err: err}
+		}
+		var batch directedEditBatch
+		if err := json.Unmarshal([]byte(raw), &batch); err != nil {
+			feedback = "The previous response was not valid JSON for the directed editing schema. Return only the structured object."
+			continue
+		}
+		if len(batch.Suggestions) == 0 {
+			return editSuggestionResult{Note: "The requested directed editing task is complete."}
+		}
+
+		validated, validationFeedback, validationErr := validateDirectedSuggestions(ctx, client, body, batch.Suggestions, overrides)
+		if validationErr != nil {
+			return editSuggestionResult{Err: validationErr}
+		}
+		if validationFeedback != "" {
+			feedback = validationFeedback
+			continue
+		}
+		return editSuggestionResult{
+			Suggestions:     validated,
+			RemainingRounds: batch.RemainingRounds,
+			Note:            fmt.Sprintf("Suggested %d directed changes", len(validated)),
+		}
+	}
+	return editSuggestionResult{Err: fmt.Errorf("could not obtain a valid directed editing batch")}
+}
+
+func validateDirectedSuggestions(ctx context.Context, client *llm.Client, body string, suggestions []editSuggestion, overrides prompts.Overrides) ([]editSuggestion, string, error) {
+	validated := make([]editSuggestion, 0, len(suggestions))
+	type span struct{ start, end int }
+	var spans []span
+	for index, suggestion := range suggestions {
+		if suggestion.empty() || suggestion.OldText == suggestion.NewText {
+			return nil, fmt.Sprintf("Suggestion %d must contain different, non-empty old_text and new_text values.", index+1), nil
+		}
+		if document.MatchCount(body, suggestion.OldText) != 1 {
+			repaired, err := repairEditSuggestion(ctx, client, body, suggestion, overrides)
+			if err != nil {
+				return nil, "", err
+			}
+			suggestion = repaired
+		}
+		if suggestion.empty() || document.MatchCount(body, suggestion.OldText) != 1 {
+			return nil, fmt.Sprintf("Suggestion %d could not be repaired to match exactly one location.", index+1), nil
+		}
+		start := strings.Index(body, suggestion.OldText)
+		current := span{start: start, end: start + len(suggestion.OldText)}
+		for _, existing := range spans {
+			if current.start < existing.end && existing.start < current.end {
+				return nil, fmt.Sprintf("Suggestions overlap near suggestion %d. Return non-overlapping replacements.", index+1), nil
+			}
+		}
+		spans = append(spans, current)
+		validated = append(validated, suggestion)
+	}
+	return validated, "", nil
 }
 
 func buildEditMessages(body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, feedback string) ([]llm.Message, error) {
@@ -2584,9 +2743,13 @@ func buildEditMessagesWithOptions(body, fileSystemMessage string, history []edit
 	if err != nil {
 		return nil, fmt.Errorf("render %s: %w", promptName, err)
 	}
-	taskPrompt, err := prompts.Render(prompts.EditTaskPrompt, overrides, nil)
+	taskName := prompts.EditTaskPrompt
+	if kind == editKindDirected {
+		taskName = prompts.DirectedEditTaskPrompt
+	}
+	taskPrompt, err := prompts.Render(taskName, overrides, nil)
 	if err != nil {
-		return nil, fmt.Errorf("render %s: %w", prompts.EditTaskPrompt, err)
+		return nil, fmt.Errorf("render %s: %w", taskName, err)
 	}
 	messages := []llm.Message{
 		systemPromptMessage(systemPrompt),
@@ -2714,6 +2877,28 @@ var editSuggestionSchema = json.RawMessage(`{
     }
   },
   "required": ["old_text", "new_text", "remaining_rounds"]
+}`)
+
+var directedEditBatchSchema = json.RawMessage(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "suggestions": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "old_text": {"type": "string"},
+          "new_text": {"type": "string"}
+        },
+        "required": ["old_text", "new_text"]
+      }
+    },
+    "remaining_rounds": {"type": "integer", "minimum": 0}
+  },
+  "required": ["suggestions", "remaining_rounds"]
 }`)
 
 var editApprovalSchema = json.RawMessage(`{
@@ -3031,8 +3216,11 @@ func promptHelpText() string {
 	return "Prompt is optional. Continue extends the current section. New Section starts the next heading."
 }
 
-func editHelpText() string {
-	return "Edit mode requests one exact replacement at a time. Accept applies it. Skip asks for the next suggestion. Automatic modes continue safely and History shows this session's edits."
+func editHelpText(kind editKind) string {
+	if kind == editKindDirected {
+		return "Directed editing can return up to 10 exact replacements per batch. Manual review shows each change in turn; automatic modes continue safely and History keeps every result."
+	}
+	return "Copy editing requests one exact replacement at a time. Accept applies it. Skip asks for the next suggestion. Automatic modes continue safely and History shows this session's edits."
 }
 
 func wrappedLineCount(value string, width int) int {

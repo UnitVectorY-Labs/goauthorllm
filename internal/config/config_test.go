@@ -85,6 +85,43 @@ func TestLoadReadsBaseURLAndModelFromLocalConfig(t *testing.T) {
 	}
 }
 
+func TestLoadUsesSpecificGenerationAndEditingModels(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".goauthorllm")
+	if err := os.WriteFile(configPath, []byte("base_url: http://file.example.com/v1\nmodel: default-model\ngeneration_model: generation-model\nediting_model: editing-model\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.GenerationModel != "generation-model" || cfg.EditingModel != "editing-model" {
+		t.Fatalf("unexpected specialized models: generation=%q editing=%q", cfg.GenerationModel, cfg.EditingModel)
+	}
+}
+
+func TestLoadSpecializedModelsFallBackToDefaultModel(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	t.Setenv("GOAUTHORLLM_MODEL", "default-model")
+	t.Setenv("GOAUTHORLLM_GENERATION_MODEL", "")
+	t.Setenv("GOAUTHORLLM_EDITING_MODEL", "")
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.GenerationModel != cfg.Model || cfg.EditingModel != cfg.Model {
+		t.Fatalf("specialized models did not fall back: %#v", cfg)
+	}
+}
+
 func TestLoadIgnoresMissingLocalConfig(t *testing.T) {
 	dir := t.TempDir()
 
