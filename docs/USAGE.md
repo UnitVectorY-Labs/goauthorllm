@@ -47,11 +47,13 @@ The `.goauthorllm` file is optional and only provides connection-setting fallbac
 
 ## Screens
 
-The application has three main screens:
+The application has five main screens:
 
 1. **File Chooser** — lists markdown files in the current directory and accepts a new filename
 2. **Mode Picker** — choose between Generate and Edit mode for the selected file
-3. **Workspace** — the document editor with mode-specific controls
+3. **Edit Options** — choose the built-in copy editor or enter custom directed-edit instructions
+4. **Approval Mode** — choose manual review, automatic safety review, or approve all
+5. **Workspace** — the document editor with mode-specific controls
 
 ## Generate Mode
 
@@ -66,13 +68,20 @@ Generated content streams into the editor in real time and the document is saved
 
 ## Edit Mode
 
-Edit mode reviews the document and proposes one copy edit at a time.
+Edit mode reviews the document and proposes one exact replacement at a time. Before opening the workspace, select an editor and an approval policy.
 
-- The model sends a structured suggestion containing `old_text` and `new_text`
+- **Copy Editor** uses the built-in copy-editing prompt
+- **Custom Editor** accepts your directed-edit instructions, such as rewriting or removing a specified section
+- The model sends a structured suggestion containing `old_text`, `new_text`, and an estimated `remaining_rounds`
 - The application validates that `old_text` matches exactly one location
+- If a suggestion is ambiguous or stale, a separate repair request asks the model to produce a uniquely matching replacement
 - **Accept** applies the replacement, saves, and requests the next suggestion
 - **Skip** records the suggestion as skipped and requests the next one
 - **Refresh** requests a new suggestion without skipping the current one
+- **Manual Review** shows every suggestion
+- **Automatic Review** sends each suggestion through a second structured safety check. Copy edits are auto-applied only when they are unambiguously mechanical; directed edits are auto-applied only when they clearly satisfy your instructions. All other suggestions stay visible for review.
+- **Approve All** applies every valid suggestion until the model reports that no useful rounds remain.
+- The **History** button displays accepted, auto-accepted, approve-all, and skipped edits from the current session.
 
 ## Keyboard Controls
 

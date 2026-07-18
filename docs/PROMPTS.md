@@ -19,12 +19,14 @@ In **generate mode** the message sequence typically includes:
 4. Task instructions specific to continue or new section
 5. Optional user guidance from the prompt pane
 
-In **edit mode** the message sequence includes:
+In **edit mode** the suggestion message sequence includes:
 1. A system prompt for copy editing
 2. Document-level instructions
 3. Task requirements for structured output
 4. The full document body
 5. Edit history and optional feedback for retries
+
+Automatic Review additionally sends the proposed edit to a separate structured approval request. If a replacement does not occur exactly once, a separate structured repair request is used before it can be shown or applied.
 
 ## Prompt Reference
 
@@ -93,3 +95,15 @@ Template for correcting an invalid suggestion on retry. Sent when a previous sug
 Template variable: `Feedback`
 
 [View source](https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/internal/prompts/assets/edit_feedback_prompt.txt)
+
+### edit_approval_prompt
+
+Sets the system role for automatic review. It allows copy edits to be accepted only when they are unambiguously mechanical, and directed edits only when they clearly follow the author's instructions.
+
+[View source](https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/internal/prompts/assets/edit_approval_prompt.txt)
+
+### edit_repair_prompt
+
+Sets the system role for repairing an invalid or ambiguous replacement so `old_text` can match exactly once.
+
+[View source](https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/internal/prompts/assets/edit_repair_prompt.txt)

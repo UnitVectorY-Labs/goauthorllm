@@ -90,6 +90,27 @@ func TestBuildEditMessagesSeparatesDocumentContentFromInstructions(t *testing.T)
 	}
 }
 
+func TestBuildDirectedEditMessagesIncludesCustomInstructionsSeparately(t *testing.T) {
+	body := "Keep this document body separate."
+	messages, err := buildEditMessagesWithOptions(body, "", nil, prompts.Overrides{}, "", editKindDirected, "Rewrite the introduction in a friendlier voice.")
+	if err != nil {
+		t.Fatalf("build directed edit messages: %v", err)
+	}
+
+	foundInstructions := false
+	for _, message := range messages {
+		if message.Name == "user_instructions" && strings.Contains(message.Content, "friendlier voice") {
+			foundInstructions = true
+		}
+		if message.Name != "content" && strings.Contains(message.Content, body) {
+			t.Fatalf("body leaked into instructions message: %#v", message)
+		}
+	}
+	if !foundInstructions {
+		t.Fatal("expected separate directed editing instructions")
+	}
+}
+
 func TestBuildGenerationMessagesReturnsPromptRenderErrors(t *testing.T) {
 	_, err := buildGenerationMessages("Body", "", "", modeContinue, prompts.Overrides{
 		prompts.ContinuePrompt: {

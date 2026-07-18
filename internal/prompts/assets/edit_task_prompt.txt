@@ -4,4 +4,5 @@ Requirements:
 - old_text must match exactly one location in the content message.
 - new_text must be the corrected replacement for that exact excerpt.
 - Prefer the smallest replacement that fully resolves the issue.
-- If no important fixes remain, return empty strings for both fields.
+- remaining_rounds is your conservative estimate of how many further suggestion rounds will be useful after this one. Return 0 when this is the final useful suggestion or when no fixes remain.
+- If no important fixes remain, return empty strings for both text fields and 0 for remaining_rounds.

@@ -21,6 +21,8 @@ const (
 	EditTaskPrompt       Name = "edit_task_prompt"
 	EditHistoryPrompt    Name = "edit_history_prompt"
 	EditFeedbackPrompt   Name = "edit_feedback_prompt"
+	EditApprovalPrompt   Name = "edit_approval_prompt"
+	EditRepairPrompt     Name = "edit_repair_prompt"
 )
 
 // Override customizes an embedded prompt.

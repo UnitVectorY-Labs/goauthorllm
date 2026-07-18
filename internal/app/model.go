@@ -46,7 +46,24 @@ type screenState int
 const (
 	screenChooser screenState = iota
 	screenModePicker
+	screenEditOptions
+	screenApprovalPicker
 	screenWorkspace
+)
+
+type editKind int
+
+const (
+	editKindCopy editKind = iota
+	editKindDirected
+)
+
+type approvalMode int
+
+const (
+	approvalManual approvalMode = iota
+	approvalAutomatic
+	approvalAll
 )
 
 type focusTarget int
@@ -56,6 +73,12 @@ const (
 	focusChooserInput
 	focusModeGenerate
 	focusModeEdit
+	focusEditDefault
+	focusEditCustom
+	focusEditInstructions
+	focusApprovalManual
+	focusApprovalAutomatic
+	focusApprovalAll
 	focusFrontMatter
 	focusEditor
 	focusPrompt
@@ -73,21 +96,28 @@ const (
 type buttonAction string
 
 const (
-	actionContinue          buttonAction = "continue"
-	actionNewSection        buttonAction = "new-section"
-	actionAcceptSuggestion  buttonAction = "accept-suggestion"
-	actionSkipSuggestion    buttonAction = "skip-suggestion"
-	actionRefreshSuggestion buttonAction = "refresh-suggestion"
-	actionSave              buttonAction = "save"
-	actionFiles             buttonAction = "files"
-	actionToggleMessage     buttonAction = "toggle-message"
-	actionQuit              buttonAction = "quit"
-	actionChooseSelected    buttonAction = "choose-selected"
-	actionChooseTyped       buttonAction = "choose-typed"
-	actionPickGenerate      buttonAction = "pick-generate"
-	actionPickEdit          buttonAction = "pick-edit"
-	actionRefreshFiles      buttonAction = "refresh-files"
-	actionBack              buttonAction = "back"
+	actionContinue           buttonAction = "continue"
+	actionNewSection         buttonAction = "new-section"
+	actionAcceptSuggestion   buttonAction = "accept-suggestion"
+	actionSkipSuggestion     buttonAction = "skip-suggestion"
+	actionRefreshSuggestion  buttonAction = "refresh-suggestion"
+	actionSave               buttonAction = "save"
+	actionFiles              buttonAction = "files"
+	actionToggleMessage      buttonAction = "toggle-message"
+	actionQuit               buttonAction = "quit"
+	actionChooseSelected     buttonAction = "choose-selected"
+	actionChooseTyped        buttonAction = "choose-typed"
+	actionPickGenerate       buttonAction = "pick-generate"
+	actionPickEdit           buttonAction = "pick-edit"
+	actionPickDefaultEditor  buttonAction = "pick-default-editor"
+	actionPickCustomEditor   buttonAction = "pick-custom-editor"
+	actionEditOptionsNext    buttonAction = "edit-options-next"
+	actionPickManualApproval buttonAction = "pick-manual-approval"
+	actionPickAutoApproval   buttonAction = "pick-auto-approval"
+	actionPickAllApproval    buttonAction = "pick-all-approval"
+	actionShowHistory        buttonAction = "show-history"
+	actionRefreshFiles       buttonAction = "refresh-files"
+	actionBack               buttonAction = "back"
 )
 
 type keyMap struct {
@@ -126,14 +156,19 @@ type fileRegion struct {
 }
 
 type layoutState struct {
-	frontMatter  rect
-	editor       rect
-	prompt       rect
-	modeGenerate rect
-	modeEdit     rect
-	buttons      []buttonRegion
-	files        []fileRegion
-	chooserInput rect
+	frontMatter    rect
+	editor         rect
+	prompt         rect
+	modeGenerate   rect
+	modeEdit       rect
+	editDefault    rect
+	editCustom     rect
+	approvalManual rect
+	approvalAuto   rect
+	approvalAll    rect
+	buttons        []buttonRegion
+	files          []fileRegion
+	chooserInput   rect
 }
 
 type chooserState struct {
@@ -148,8 +183,9 @@ type streamMsg struct {
 }
 
 type editSuggestion struct {
-	OldText string `json:"old_text"`
-	NewText string `json:"new_text"`
+	OldText         string `json:"old_text"`
+	NewText         string `json:"new_text"`
+	RemainingRounds int    `json:"remaining_rounds"`
 }
 
 func (e editSuggestion) empty() bool {
@@ -166,6 +202,7 @@ type editSuggestionResult struct {
 	Suggestion *editSuggestion
 	Note       string
 	Err        error
+	AutoAccept bool
 }
 
 type editMsg struct {
@@ -179,6 +216,10 @@ type editState struct {
 	requesting    bool
 	requestID     int
 	requestCancel context.CancelFunc
+	kind          editKind
+	approval      approvalMode
+	instructions  ta.Model
+	showHistory   bool
 }
 
 // Model is the top-level Bubble Tea model for goauthorllm.
@@ -272,6 +313,9 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 	m.prompt = newTextarea("Optional guidance for the next generated addition...", false)
 	m.prompt.SetHeight(5)
 	m.prompt.ShowLineNumbers = false
+	m.edit.instructions = newTextarea("Describe the directed edit you want the model to make...", false)
+	m.edit.instructions.ShowLineNumbers = false
+	m.edit.instructions.SetHeight(6)
 
 	m.chooser.input = ti.New()
 	m.chooser.input.Placeholder = "draft.md"
@@ -374,6 +418,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case screenChooser:
 		return m.updateChooserInputs(msg)
+	case screenEditOptions:
+		if m.focus == focusEditInstructions {
+			var cmd tea.Cmd
+			m.edit.instructions, cmd = m.edit.instructions.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	case screenWorkspace:
 		return m.updateWorkspaceInputs(msg)
 	default:
@@ -395,6 +446,10 @@ func (m Model) View() string {
 		view = m.renderChooser()
 	case m.screen == screenModePicker:
 		view = m.renderModePicker()
+	case m.screen == screenEditOptions:
+		view = m.renderEditOptions()
+	case m.screen == screenApprovalPicker:
+		view = m.renderApprovalPicker()
 	default:
 		view = m.renderWorkspace()
 	}
@@ -472,6 +527,21 @@ func (m *Model) handleEditMsg(msg editMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.edit.suggestion = msg.result.Suggestion
+	if msg.result.AutoAccept && msg.result.Suggestion != nil {
+		action := "auto-accepted"
+		if m.edit.approval == approvalAll {
+			action = "approved-all"
+		}
+		if !m.applySuggestion(*msg.result.Suggestion, action) {
+			m.setStatus("Automatic edit could not be applied; requesting a repaired suggestion", "error")
+			return m, m.requestEditSuggestion("Repairing an automatic edit suggestion...")
+		}
+		if msg.result.Suggestion.RemainingRounds <= 0 {
+			m.setStatus("Applied final automatic edit; no further rounds are needed", "success")
+			return m, nil
+		}
+		return m, m.requestEditSuggestion("Applied automatic edit and requesting the next suggestion...")
+	}
 	if msg.result.Note != "" {
 		m.setStatus(msg.result.Note, "success")
 	} else if msg.result.Suggestion == nil {
@@ -564,6 +634,28 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 		if m.layout.modeEdit.contains(msg.X, msg.Y) {
 			m.focus = focusModeEdit
 			return true, m.runAction(actionPickEdit)
+		}
+	case screenEditOptions:
+		if m.layout.editDefault.contains(msg.X, msg.Y) {
+			m.focus = focusEditDefault
+			return true, m.runAction(actionPickDefaultEditor)
+		}
+		if m.layout.editCustom.contains(msg.X, msg.Y) {
+			m.focus = focusEditCustom
+			return true, m.runAction(actionPickCustomEditor)
+		}
+	case screenApprovalPicker:
+		if m.layout.approvalManual.contains(msg.X, msg.Y) {
+			m.focus = focusApprovalManual
+			return true, m.runAction(actionPickManualApproval)
+		}
+		if m.layout.approvalAuto.contains(msg.X, msg.Y) {
+			m.focus = focusApprovalAutomatic
+			return true, m.runAction(actionPickAutoApproval)
+		}
+		if m.layout.approvalAll.contains(msg.X, msg.Y) {
+			m.focus = focusApprovalAll
+			return true, m.runAction(actionPickAllApproval)
 		}
 	case screenWorkspace:
 		if m.layout.frontMatter.contains(msg.X, msg.Y) && m.showFrontMatter {
@@ -690,6 +782,59 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return false, nil
 
+	case screenEditOptions:
+		if key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.focusPrev) || key.Matches(msg, m.keys.moveUp) || key.Matches(msg, m.keys.moveDown) {
+			switch m.focus {
+			case focusEditDefault:
+				m.focus = focusEditCustom
+			case focusEditCustom:
+				if m.edit.kind == editKindDirected {
+					m.focus = focusEditInstructions
+				} else {
+					m.focus = focusEditDefault
+				}
+			default:
+				m.focus = focusEditDefault
+			}
+			m.syncFocus()
+			return true, nil
+		}
+		if key.Matches(msg, m.keys.continueOp) {
+			return true, m.runAction(actionEditOptionsNext)
+		}
+		if key.Matches(msg, m.keys.selectItem) {
+			if m.focus == focusEditDefault {
+				return true, m.runAction(actionPickDefaultEditor)
+			}
+			if m.focus == focusEditCustom {
+				return true, m.runAction(actionPickCustomEditor)
+			}
+		}
+		return false, nil
+
+	case screenApprovalPicker:
+		if key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.moveDown) || key.Matches(msg, m.keys.moveUp) || key.Matches(msg, m.keys.focusPrev) {
+			if m.focus == focusApprovalManual {
+				m.focus = focusApprovalAutomatic
+			} else if m.focus == focusApprovalAutomatic {
+				m.focus = focusApprovalAll
+			} else {
+				m.focus = focusApprovalManual
+			}
+			return true, nil
+		}
+		if key.Matches(msg, m.keys.selectItem) {
+			switch m.focus {
+			case focusApprovalAutomatic:
+				return true, m.runAction(actionPickAutoApproval)
+			case focusApprovalAll:
+				return true, m.runAction(actionPickAllApproval)
+			default:
+				return true, m.runAction(actionPickManualApproval)
+			}
+		}
+		return false, nil
+
 	case screenWorkspace:
 		if key.Matches(msg, m.keys.focusNext) {
 			m.advanceWorkspaceFocus(1)
@@ -808,6 +953,12 @@ func (m *Model) resize() {
 		return
 	case screenModePicker:
 		return
+	case screenEditOptions:
+		m.edit.instructions.SetWidth(contentWidth)
+		m.edit.instructions.SetHeight(clamp(m.height/4, 4, 8))
+		return
+	case screenApprovalPicker:
+		return
 	case screenWorkspace:
 	}
 
@@ -867,6 +1018,7 @@ func (m *Model) syncFocus() {
 	m.frontMatter.Blur()
 	m.editor.Blur()
 	m.prompt.Blur()
+	m.edit.instructions.Blur()
 
 	if m.showFrontMatter {
 		m.frontMatter.Focus()
@@ -882,6 +1034,8 @@ func (m *Model) syncFocus() {
 		m.editor.Focus()
 	case focusPrompt:
 		m.prompt.Focus()
+	case focusEditInstructions:
+		m.edit.instructions.Focus()
 	}
 }
 
@@ -982,6 +1136,7 @@ func (m Model) renderEditWorkspace() string {
 		{Action: actionAcceptSuggestion, Label: "Accept [Ctrl+A]", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusAcceptButton},
 		{Action: actionSkipSuggestion, Label: "Skip [Ctrl+K]", Background: "#9A3412", Foreground: "#FFEDD5", Focus: focusSkipButton},
 		{Action: actionRefreshSuggestion, Label: "Refresh [Ctrl+R]", Background: "#0F766E", Foreground: "#CCFBF1", Focus: focusRefreshButton},
+		{Action: actionShowHistory, Label: "History", Background: "#4C1D95", Foreground: "#EDE9FE", Focus: focusTarget(-1)},
 		{Action: actionSave, Label: "Save [Ctrl+S]", Background: "#7C2D12", Foreground: "#FFEDD5", Focus: focusSaveButton},
 		{Action: actionFiles, Label: "Files [Ctrl+O]", Background: "#312E81", Foreground: "#E0E7FF", Focus: focusFilesButton},
 		{Action: actionToggleMessage, Label: "Message", Background: "#0F766E", Foreground: "#CCFBF1", Focus: focusMessageButton},
@@ -995,6 +1150,17 @@ func (m Model) renderEditWorkspace() string {
 func (m Model) renderSuggestionBody() string {
 	var parts []string
 	parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(editHelpText()))
+	if m.edit.showHistory {
+		parts = append(parts, "", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Session Edit History"))
+		if len(m.edit.history) == 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("No edits have been applied or skipped in this session."))
+		} else {
+			for _, entry := range m.edit.history {
+				parts = append(parts, fmt.Sprintf("%s: %q → %q", entry.Action, truncateToWidth(entry.OldText, 36), truncateToWidth(entry.NewText, 36)))
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
 
 	switch {
 	case m.edit.requesting:
@@ -1023,7 +1189,6 @@ func (m Model) renderSuggestionBody() string {
 			lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(fmt.Sprintf("Exact match count in document: %d", matchCount)),
 		)
 	}
-
 	return strings.Join(parts, "\n")
 }
 
@@ -1177,6 +1342,52 @@ func (m Model) renderModePicker() string {
 	y = lineCount(strings.Join(content, "\n"))
 	content = append(content, m.renderButtons(buttons, y))
 	return strings.Join(content, "\n")
+}
+
+func (m Model) renderEditOptions() string {
+	m.layout = layoutState{}
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Choose Editing Options")
+	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("First select the editor. Custom instructions steer a directed edit.")
+	defaultCard := m.renderPane("Copy Editor", "Use the built-in copy editing prompt for one high-priority correction at a time.", m.focus == focusEditDefault, false)
+	customCard := m.renderPane("Custom Editor", "Use your instructions to direct the edit. Select this card, then write the instructions below.", m.focus == focusEditCustom, false)
+	instructions := m.renderPane("Custom Editing Instructions", m.edit.instructions.View(), m.focus == focusEditInstructions, false)
+	content := []string{title, subtitle, "", defaultCard, "", customCard, "", instructions, "", m.renderStatusBar()}
+	y := lineCount(title) + lineCount(subtitle) + 2
+	m.layout.editDefault = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(defaultCard) - 1}
+	y += lineCount(defaultCard) + 1
+	m.layout.editCustom = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(customCard) - 1}
+	y = lineCount(strings.Join(content, "\n"))
+	buttons := []actionButton{
+		{Action: actionPickDefaultEditor, Label: "Copy Editor", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusEditDefault},
+		{Action: actionPickCustomEditor, Label: "Custom Editor", Background: "#1D4ED8", Foreground: "#DBEAFE", Focus: focusEditCustom},
+		{Action: actionEditOptionsNext, Label: "Next [Ctrl+G]", Background: "#7C3AED", Foreground: "#F3E8FF", Focus: focusTarget(-1)},
+		{Action: actionBack, Label: "Back [Esc]", Background: "#334155", Foreground: "#E2E8F0", Focus: focusTarget(-1)},
+	}
+	return strings.Join(append(content, m.renderButtons(buttons, y)), "\n")
+}
+
+func (m Model) renderApprovalPicker() string {
+	m.layout = layoutState{}
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Choose Approval Mode")
+	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("Choose how accepted suggestions progress through the document.")
+	manual := m.renderPane("Manual Review", "Show every suggestion. You accept or skip each one.", m.focus == focusApprovalManual, false)
+	auto := m.renderPane("Automatic Review", "A second model check auto-applies only safe copy edits or edits that clearly conform to your custom instructions. Other suggestions remain for review.", m.focus == focusApprovalAutomatic, false)
+	all := m.renderPane("Approve All", "Apply every valid suggestion automatically until the editor reports no useful rounds remain.", m.focus == focusApprovalAll, false)
+	content := []string{title, subtitle, "", manual, "", auto, "", all, "", m.renderStatusBar()}
+	y := lineCount(title) + lineCount(subtitle) + 2
+	m.layout.approvalManual = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(manual) - 1}
+	y += lineCount(manual) + 1
+	m.layout.approvalAuto = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(auto) - 1}
+	y += lineCount(auto) + 1
+	m.layout.approvalAll = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(all) - 1}
+	y = lineCount(strings.Join(content, "\n"))
+	buttons := []actionButton{
+		{Action: actionPickManualApproval, Label: "Manual", Background: "#7C2D12", Foreground: "#FFEDD5", Focus: focusApprovalManual},
+		{Action: actionPickAutoApproval, Label: "Automatic", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusApprovalAutomatic},
+		{Action: actionPickAllApproval, Label: "Approve All", Background: "#1D4ED8", Foreground: "#DBEAFE", Focus: focusApprovalAll},
+		{Action: actionBack, Label: "Back [Esc]", Background: "#334155", Foreground: "#E2E8F0", Focus: focusTarget(-1)},
+	}
+	return strings.Join(append(content, m.renderButtons(buttons, y)), "\n")
 }
 
 func (m Model) renderHeader() string {
@@ -1431,7 +1642,57 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		return m.enterWorkspace(workspaceGenerate)
 
 	case actionPickEdit:
+		m.screen = screenEditOptions
+		m.screenPath = append(m.screenPath, screenModePicker)
+		m.edit.kind = editKindCopy
+		m.edit.approval = approvalManual
+		m.edit.instructions.SetValue("")
+		m.focus = focusEditDefault
+		m.resize()
+		m.syncFocus()
+		m.setStatus("Choose an editor, then choose how suggestions are approved", "info")
+		return nil
+
+	case actionPickDefaultEditor:
+		m.edit.kind = editKindCopy
+		m.focus = focusEditDefault
+		m.syncFocus()
+		m.setStatus("Copy editor selected. Press Ctrl+G for approval options.", "muted")
+		return nil
+
+	case actionPickCustomEditor:
+		m.edit.kind = editKindDirected
+		m.focus = focusEditInstructions
+		m.syncFocus()
+		m.setStatus("Custom editor selected. Write instructions, then press Ctrl+G.", "muted")
+		return nil
+
+	case actionEditOptionsNext:
+		if m.edit.kind == editKindDirected && strings.TrimSpace(m.edit.instructions.Value()) == "" {
+			m.setStatus("Add custom editing instructions before continuing", "error")
+			return nil
+		}
+		m.screen = screenApprovalPicker
+		m.screenPath = append(m.screenPath, screenEditOptions)
+		m.focus = focusApprovalManual
+		m.resize()
+		m.syncFocus()
+		m.setStatus("Choose an approval mode", "info")
+		return nil
+
+	case actionPickManualApproval:
+		m.edit.approval = approvalManual
 		return m.enterWorkspace(workspaceEdit)
+	case actionPickAutoApproval:
+		m.edit.approval = approvalAutomatic
+		return m.enterWorkspace(workspaceEdit)
+	case actionPickAllApproval:
+		m.edit.approval = approvalAll
+		return m.enterWorkspace(workspaceEdit)
+
+	case actionShowHistory:
+		m.edit.showHistory = !m.edit.showHistory
+		return nil
 
 	case actionRefreshFiles:
 		if err := m.refreshChooser(); err != nil {
@@ -1478,6 +1739,12 @@ func (m *Model) goBack() tea.Cmd {
 		if m.pendingName != "" {
 			m.setStatus("Choose how to work with "+m.pendingName, "info")
 		}
+	case screenEditOptions:
+		m.focus = focusModeEdit
+		m.setStatus("Choose how to work with "+m.pendingName, "info")
+	case screenApprovalPicker:
+		m.focus = focusEditDefault
+		m.setStatus("Choose an editor", "info")
 	case screenWorkspace:
 		m.focus = focusEditor
 		m.setStatus("Returned to "+m.mode.label()+" mode", "muted")
@@ -1504,7 +1771,9 @@ func (m *Model) enterWorkspace(mode workspaceMode) tea.Cmd {
 	m.screenPath = []screenState{screenChooser, screenModePicker}
 	m.focus = focusEditor
 	m.showFrontMatter = false
-	m.edit = editState{}
+	if mode != workspaceEdit {
+		m.edit = editState{}
+	}
 	m.resize()
 	m.syncFocus()
 	m.setStatus("Opened "+filepath.Base(m.doc.Path)+" in "+mode.label()+" mode", "success")
@@ -1665,6 +1934,9 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 	body := m.doc.Body
 	systemMessage := m.doc.SystemMessage
 	history := append([]editHistoryEntry(nil), m.edit.history...)
+	kind := m.edit.kind
+	approval := m.edit.approval
+	instructions := m.edit.instructions.Value()
 	client := m.client
 	overrides := m.cfg.MessageOverrides
 
@@ -1672,7 +1944,7 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 	m.edit.requestCancel = cancel
 	events := make(chan editSuggestionResult, 1)
 	go func() {
-		events <- fetchEditSuggestion(ctx, client, body, systemMessage, history, overrides)
+		events <- fetchEditSuggestion(ctx, client, body, systemMessage, history, overrides, kind, approval, instructions)
 		close(events)
 	}()
 	return tea.Batch(m.spin.Tick, waitForEditSuggestion(events, id))
@@ -1684,24 +1956,30 @@ func (m *Model) acceptSuggestion() tea.Cmd {
 		return nil
 	}
 
-	updatedBody, ok := document.ReplaceUnique(m.doc.Body, suggestion.OldText, suggestion.NewText)
-	if !ok {
+	if !m.applySuggestion(*suggestion, "accepted") {
 		m.setStatus("Suggestion no longer matches exactly one location", "error")
 		return m.requestEditSuggestion("Refreshing after a stale edit suggestion...")
 	}
 
+	m.edit.suggestion = nil
+
+	return m.requestEditSuggestion("Applied edit and requesting the next suggestion...")
+}
+
+func (m *Model) applySuggestion(suggestion editSuggestion, action string) bool {
+	updatedBody, ok := document.ReplaceUnique(m.doc.Body, suggestion.OldText, suggestion.NewText)
+	if !ok {
+		return false
+	}
 	m.editor.SetValue(updatedBody)
 	m.doc.SetBody(updatedBody)
 	m.lastEditAt = time.Now()
-	m.appendEditHistory("accepted", *suggestion)
+	m.appendEditHistory(action, suggestion)
 	m.edit.suggestion = nil
-
 	if err := m.saveCurrentDocument(); err != nil {
 		m.setStatus("Applied suggestion but save failed: "+err.Error(), "error")
-		return nil
 	}
-
-	return m.requestEditSuggestion("Applied edit and requesting the next suggestion...")
+	return true
 }
 
 func (m *Model) appendEditHistory(action string, suggestion editSuggestion) {
@@ -1894,14 +2172,14 @@ func actionMessages(mode generationMode, sections []document.Section, prompt str
 	return messages, nil
 }
 
-func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides) editSuggestionResult {
+func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, kind editKind, approval approvalMode, instructions string) editSuggestionResult {
 	if strings.TrimSpace(body) == "" {
 		return editSuggestionResult{Note: "The document is empty. Add content before requesting copy edits."}
 	}
 
 	feedback := ""
 	for range 3 {
-		messages, err := buildEditMessages(body, fileSystemMessage, history, overrides, feedback)
+		messages, err := buildEditMessagesWithOptions(body, fileSystemMessage, history, overrides, feedback, kind, instructions)
 		if err != nil {
 			return editSuggestionResult{Err: err}
 		}
@@ -1925,20 +2203,51 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 
 		matchCount := document.MatchCount(body, suggestion.OldText)
 		if matchCount != 1 {
-			feedback = fmt.Sprintf("The previous old_text matched %d locations in the document. Return a smaller exact excerpt that matches exactly one location.", matchCount)
-			continue
+			repaired, repairErr := repairEditSuggestion(ctx, client, body, suggestion, overrides)
+			if repairErr != nil {
+				return editSuggestionResult{Err: repairErr}
+			}
+			suggestion = repaired
+			if suggestion.empty() {
+				return editSuggestionResult{Note: "Could not safely repair an ambiguous edit suggestion."}
+			}
+			if document.MatchCount(body, suggestion.OldText) != 1 {
+				feedback = fmt.Sprintf("The repaired old_text matched %d locations. Return a unique exact excerpt.", document.MatchCount(body, suggestion.OldText))
+				continue
+			}
 		}
 
-		return editSuggestionResult{
+		result := editSuggestionResult{
 			Suggestion: &suggestion,
 			Note:       "Suggested one copy edit with a unique exact match",
 		}
+		if approval == approvalAll {
+			result.AutoAccept = true
+			return result
+		}
+		if approval == approvalAutomatic {
+			approved, approvalErr := approveEditSuggestion(ctx, client, body, suggestion, kind, instructions, overrides)
+			if approvalErr != nil {
+				return editSuggestionResult{Err: approvalErr}
+			}
+			result.AutoAccept = approved
+			if approved {
+				result.Note = "Safety check approved this edit automatically"
+			} else {
+				result.Note = "Safety check requires your review"
+			}
+		}
+		return result
 	}
 
 	return editSuggestionResult{Err: fmt.Errorf("could not obtain a unique edit suggestion")}
 }
 
 func buildEditMessages(body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, feedback string) ([]llm.Message, error) {
+	return buildEditMessagesWithOptions(body, fileSystemMessage, history, overrides, feedback, editKindCopy, "")
+}
+
+func buildEditMessagesWithOptions(body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, feedback string, kind editKind, instructions string) ([]llm.Message, error) {
 	systemPrompt, err := prompts.Render(prompts.EditPrompt, overrides, nil)
 	if err != nil {
 		return nil, fmt.Errorf("render %s: %w", prompts.EditPrompt, err)
@@ -1951,6 +2260,9 @@ func buildEditMessages(body, fileSystemMessage string, history []editHistoryEntr
 		systemPromptMessage(systemPrompt),
 		taskInstructionsMessage(taskPrompt),
 		contentMessage("user", body),
+	}
+	if kind == editKindDirected {
+		messages = append(messages[:1], append([]llm.Message{userInstructionsMessage("Author-directed editing instructions:\n" + strings.TrimSpace(instructions))}, messages[1:]...)...)
 	}
 
 	if strings.TrimSpace(fileSystemMessage) != "" {
@@ -1980,6 +2292,44 @@ func buildEditMessages(body, fileSystemMessage string, history []editHistoryEntr
 		messages = append(messages, feedbackMessage(feedbackPrompt))
 	}
 	return messages, nil
+}
+
+func repairEditSuggestion(ctx context.Context, client *llm.Client, body string, suggestion editSuggestion, overrides prompts.Overrides) (editSuggestion, error) {
+	prompt, err := prompts.Render(prompts.EditRepairPrompt, overrides, nil)
+	if err != nil {
+		return editSuggestion{}, err
+	}
+	raw, err := client.StructuredChat(ctx, []llm.Message{systemPromptMessage(prompt), taskInstructionsMessage(fmt.Sprintf("Invalid suggestion: old_text=%q new_text=%q", suggestion.OldText, suggestion.NewText)), contentMessage("user", body)}, "repaired_edit_suggestion", editSuggestionSchema)
+	if err != nil {
+		return editSuggestion{}, err
+	}
+	var repaired editSuggestion
+	if err := json.Unmarshal([]byte(raw), &repaired); err != nil {
+		return editSuggestion{}, err
+	}
+	return repaired, nil
+}
+
+func approveEditSuggestion(ctx context.Context, client *llm.Client, body string, suggestion editSuggestion, kind editKind, instructions string, overrides prompts.Overrides) (bool, error) {
+	prompt, err := prompts.Render(prompts.EditApprovalPrompt, overrides, nil)
+	if err != nil {
+		return false, err
+	}
+	mode := "copy editing"
+	if kind == editKindDirected {
+		mode = "directed editing; author instructions: " + strings.TrimSpace(instructions)
+	}
+	raw, err := client.StructuredChat(ctx, []llm.Message{systemPromptMessage(prompt), taskInstructionsMessage(fmt.Sprintf("Editing mode: %s\nProposed replacement: old_text=%q new_text=%q", mode, suggestion.OldText, suggestion.NewText)), contentMessage("user", body)}, "edit_auto_approval", editApprovalSchema)
+	if err != nil {
+		return false, err
+	}
+	var result struct {
+		Approve bool `json:"approve"`
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return false, err
+	}
+	return result.Approve, nil
 }
 
 // --- Message constructors ---
@@ -2025,9 +2375,20 @@ var editSuggestionSchema = json.RawMessage(`{
     },
     "new_text": {
       "type": "string"
+    },
+    "remaining_rounds": {
+      "type": "integer",
+      "minimum": 0
     }
   },
-  "required": ["old_text", "new_text"]
+  "required": ["old_text", "new_text", "remaining_rounds"]
+}`)
+
+var editApprovalSchema = json.RawMessage(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {"approve": {"type": "boolean"}},
+  "required": ["approve"]
 }`)
 
 // --- Text normalization ---
@@ -2330,7 +2691,7 @@ func promptHelpText() string {
 }
 
 func editHelpText() string {
-	return "Edit mode requests one exact replacement at a time. Accept applies it. Skip asks the model for the next suggestion."
+	return "Edit mode requests one exact replacement at a time. Accept applies it. Skip asks for the next suggestion. Automatic modes continue safely and History shows this session's edits."
 }
 
 func wrappedLineCount(value string, width int) int {

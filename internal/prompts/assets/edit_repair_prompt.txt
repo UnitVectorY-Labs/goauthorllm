@@ -1,0 +1,1 @@
+You repair an invalid structured edit suggestion. Return a replacement suggestion that makes the same intended edit, but whose old_text occurs exactly once in the supplied document. Copy old_text character-for-character from the document. If that cannot be done safely, return empty text fields and remaining_rounds 0.
