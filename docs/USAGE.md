@@ -50,7 +50,7 @@ The `.goauthorllm` file is optional and only provides connection-setting fallbac
 The application has five main screens:
 
 1. **File Chooser** — lists markdown files in the current directory and accepts a new filename
-2. **Mode Picker** — choose between Generate and Edit mode for the selected file
+2. **Mode Picker** — choose View/Edit Document, Generate, or Edit with AI from a keyboard-and-mouse list
 3. **Edit Options** — choose the built-in copy editor or enter custom directed-edit instructions
 4. **Approval Mode** — choose manual review, automatic safety review, or approve all
 5. **Workspace** — the document editor with mode-specific controls
@@ -66,9 +66,15 @@ Generate mode extends the document with model-generated markdown.
 
 Generated content streams into the editor in real time and the document is saved automatically when generation completes.
 
+## View / Edit Document Mode
+
+This mode opens the document without starting an LLM request. Use it to read or manually edit Markdown, document instructions, and front matter.
+
 ## Edit Mode
 
 Edit mode reviews the document and proposes one exact replacement at a time. Before opening the workspace, select an editor and an approval policy.
+
+The mode, editor, and approval screens use standard list navigation: move with `↑`/`↓`, choose with `Enter`, or click an item. Custom instructions can be entered directly; use `Tab` to move to the visible **Next** button.
 
 - **Copy Editor** uses the built-in copy-editing prompt
 - **Custom Editor** accepts your directed-edit instructions, such as rewriting or removing a specified section
@@ -81,19 +87,25 @@ Edit mode reviews the document and proposes one exact replacement at a time. Bef
 - **Manual Review** shows every suggestion
 - **Automatic Review** sends each suggestion through a second structured safety check. Copy edits are auto-applied only when they are unambiguously mechanical; directed edits are auto-applied only when they clearly satisfy your instructions. All other suggestions stay visible for review.
 - **Approve All** applies every valid suggestion until the model reports that no useful rounds remain.
-- The **History** button displays accepted, auto-accepted, approve-all, and skipped edits from the current session.
+- The edit workspace has **Suggestion**, **History**, and **Document** tabs. A suggestion remains visible while automatic review is running or when automatic review declines it.
+- The **History** tab displays accepted, auto-accepted, approve-all, and skipped edits from the current session. Use `←`/`→` to page through full old/new diffs.
+
+The Generate workspace has separate **Document** and **Guidance** tabs so each editor has the available screen height.
 
 ## Keyboard Controls
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift+Tab` | Move focus between panes and buttons |
+| `Tab` / `Shift+Tab` | Move forward/backward through workspace tabs; in custom setup, move between instructions and Next |
 | `Ctrl+S` | Save the document |
 | `Ctrl+O` | Return to file selection |
 | `Ctrl+Q` | Quit the application |
 | `Esc` | Back out of the current view or cancel an active request |
 | `Enter` | Activate the focused button or add a newline in a text area |
 | `PgUp` / `PgDn` | Page through the document editor |
+| `←` / `→` | Change a focused workspace tab, or page through edit history |
+| `Alt+M` | Open document instructions |
+| `Alt+H` | Open edit history in Edit mode |
 
 ### Generate Mode
 

@@ -44,6 +44,12 @@ Sets the assistant's role for edit mode. Instructs the model to review the docum
 
 [View source](https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/internal/prompts/assets/edit_prompt.txt)
 
+### directed_edit_prompt
+
+Sets the assistant role for custom directed edits. It limits suggestions to changes required by the author's instructions and stops once those instructions are satisfied.
+
+[View source](https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/internal/prompts/assets/directed_edit_prompt.txt)
+
 ### continue_prompt
 
 Task instructions for continuing the current section. This is a Go template that receives the section label and whether there is an excerpt to continue from.

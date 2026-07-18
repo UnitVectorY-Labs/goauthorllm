@@ -12,6 +12,7 @@ import (
 
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/config"
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/document"
+	"github.com/UnitVectorY-Labs/goauthorllm/internal/llm"
 )
 
 func TestRawWheelDirectionRecognizesWheelRunes(t *testing.T) {
@@ -251,7 +252,7 @@ func TestBackFromWorkspaceReturnsToModePicker(t *testing.T) {
 	if updated.screen != screenModePicker {
 		t.Fatalf("expected to return to mode picker, got %v", updated.screen)
 	}
-	if updated.focus != focusModeGenerate {
+	if updated.focus != focusModeDocument {
 		t.Fatalf("expected mode picker focus to reset, got %v", updated.focus)
 	}
 }
@@ -299,5 +300,242 @@ func TestAcceptSuggestionReplacesUniqueMatch(t *testing.T) {
 	}
 	if len(model.edit.history) != 1 || model.edit.history[0].Action != "accepted" {
 		t.Fatalf("expected accepted suggestion history, got %#v", model.edit.history)
+	}
+}
+
+func TestCopyEditorSelectionAdvancesWithEnter(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.screen = screenEditOptions
+	model.focus = focusEditDefault
+	model.editorChoices.Select(0)
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := next.(*Model)
+	if updated.screen != screenApprovalPicker {
+		t.Fatalf("expected Enter to advance to approval picker, got %v", updated.screen)
+	}
+}
+
+func TestAutomaticReviewKeepsSuggestionVisibleWhileChecking(t *testing.T) {
+	client := llm.NewClient("http://example.com", "test-model", "", time.Second)
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, client)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.width = 100
+	model.height = 30
+	model.screen = screenWorkspace
+	model.mode = workspaceEdit
+	model.focus = focusWorkspaceTabs
+	model.doc = &document.Document{Path: "test.md", Body: "Lena walk home."}
+	model.editor.SetValue(model.doc.Body)
+	model.edit.approval = approvalAutomatic
+	model.edit.requestID = 7
+
+	suggestion := &editSuggestion{OldText: "Lena walk", NewText: "Lena walks", RemainingRounds: 1}
+	_, cmd := model.handleEditMsg(editMsg{id: 7, result: editSuggestionResult{Suggestion: suggestion}})
+	if cmd == nil {
+		t.Fatal("expected automatic approval command")
+	}
+	if model.edit.suggestion == nil || model.edit.suggestion.OldText != "Lena walk" {
+		t.Fatalf("suggestion was cleared before approval: %#v", model.edit.suggestion)
+	}
+	if !model.edit.reviewing {
+		t.Fatal("expected automatic review to be active")
+	}
+	model.resize()
+	view := model.View()
+	if !strings.Contains(view, "Lena walk") || !strings.Contains(view, "Lena walks") {
+		t.Fatalf("active suggestion is not visible during automatic review:\n%s", view)
+	}
+}
+
+func TestRejectedAutomaticReviewRetainsSuggestion(t *testing.T) {
+	model := &Model{edit: editState{
+		requestID:  3,
+		reviewing:  true,
+		suggestion: &editSuggestion{OldText: "old", NewText: "new"},
+	}}
+	model.handleEditApprovalMsg(editApprovalMsg{id: 3, approved: false})
+	if model.edit.suggestion == nil {
+		t.Fatal("rejected automatic review should keep the suggestion for manual review")
+	}
+	if model.edit.reviewing {
+		t.Fatal("automatic review should be complete")
+	}
+}
+
+func TestHistoryPanePagesBackward(t *testing.T) {
+	model := &Model{
+		screen:       screenWorkspace,
+		mode:         workspaceEdit,
+		focus:        focusHistoryPane,
+		workspaceTab: 1,
+		edit: editState{
+			historyIndex: 2,
+			history: []editHistoryEntry{
+				{Action: "auto-accepted", OldText: "one", NewText: "1"},
+				{Action: "auto-accepted", OldText: "two", NewText: "2"},
+				{Action: "auto-accepted", OldText: "three", NewText: "3"},
+			},
+		},
+	}
+
+	model.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
+	if model.edit.historyIndex != 1 {
+		t.Fatalf("expected previous history entry, got index %d", model.edit.historyIndex)
+	}
+}
+
+func TestTabSwitchesGenerateWorkspaceTabs(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.screen = screenWorkspace
+	model.mode = workspaceGenerate
+	model.workspaceTab = 0
+	model.focus = focusEditor
+
+	model.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	if model.workspaceTab != 1 || model.focus != focusPrompt {
+		t.Fatalf("expected Guidance tab, got tab=%d focus=%v", model.workspaceTab, model.focus)
+	}
+	model.handleKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if model.workspaceTab != 0 || model.focus != focusEditor {
+		t.Fatalf("expected Document tab, got tab=%d focus=%v", model.workspaceTab, model.focus)
+	}
+}
+
+func TestTabSwitchesEditWorkspaceTabs(t *testing.T) {
+	modelValue, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model := &modelValue
+	model.screen = screenWorkspace
+	model.mode = workspaceEdit
+	model.workspaceTab = 0
+	model.focus = focusWorkspaceTabs
+	model.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	if model.workspaceTab != 1 || model.focus != focusHistoryPane {
+		t.Fatalf("expected History tab, got tab=%d focus=%v", model.workspaceTab, model.focus)
+	}
+	model.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	if model.workspaceTab != 2 || model.focus != focusEditor {
+		t.Fatalf("expected Document tab, got tab=%d focus=%v", model.workspaceTab, model.focus)
+	}
+}
+
+func TestModePickerClickOpensEditOptions(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.width = 90
+	model.height = 28
+	model.screen = screenModePicker
+	model.pendingName = "test.md"
+	model.resize()
+	model.View()
+	if len(model.layout.choices) != 3 {
+		t.Fatalf("expected three clickable mode choices, got %d", len(model.layout.choices))
+	}
+	region := model.layout.choices[2].Rect
+	model.handleMouse(tea.MouseMsg{X: region.x1 + 2, Y: region.y1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if model.screen != screenEditOptions {
+		t.Fatalf("expected edit options after clicking Edit with AI, got %v", model.screen)
+	}
+}
+
+func TestEditOptionClickSelectsDirectedEditor(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.width = 90
+	model.height = 30
+	model.screen = screenEditOptions
+	model.resize()
+	model.View()
+	region := model.layout.choices[1].Rect
+	model.handleMouse(tea.MouseMsg{X: region.x1 + 2, Y: region.y1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if model.edit.kind != editKindDirected || model.focus != focusEditInstructions {
+		t.Fatalf("expected directed editor instructions after click, got kind=%v focus=%v", model.edit.kind, model.focus)
+	}
+}
+
+func TestEditFooterOnlyShowsAvailableActions(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.width = 100
+	model.height = 30
+	model.screen = screenWorkspace
+	model.mode = workspaceEdit
+	model.doc = &document.Document{Path: "test.md", Body: "Body"}
+	model.editor.SetValue("Body")
+	model.edit.requesting = true
+	model.resize()
+	view := model.View()
+	if strings.Contains(view, "Accept [") || strings.Contains(view, "Skip [") || strings.Contains(view, "Refresh [") {
+		t.Fatalf("busy edit footer showed unavailable suggestion actions:\n%s", view)
+	}
+	if !strings.Contains(view, "Cancel [Esc]") || !strings.Contains(view, "History [Alt+H]") {
+		t.Fatalf("busy edit footer omitted available actions:\n%s", view)
+	}
+}
+
+func TestClickableTextAreaTracksHoverMotion(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.width = 90
+	model.height = 28
+	model.screen = screenWorkspace
+	model.mode = workspaceDocument
+	model.doc = &document.Document{Path: "test.md", Body: "Body"}
+	model.editor.SetValue("Body")
+	model.resize()
+	model.View()
+
+	region := model.layout.editor
+	handled, _ := model.handleMouse(tea.MouseMsg{X: region.x1 + 2, Y: region.y1 + 1, Action: tea.MouseActionMotion})
+	if !handled || model.hover != focusEditor {
+		t.Fatalf("expected editor hover, got handled=%v hover=%v", handled, model.hover)
+	}
+
+	handled, _ = model.handleMouse(tea.MouseMsg{X: model.width - 1, Y: model.height - 1, Action: tea.MouseActionMotion})
+	if !handled || model.hover != focusTarget(-1) {
+		t.Fatalf("expected hover to clear, got handled=%v hover=%v", handled, model.hover)
+	}
+}
+
+func TestCustomInstructionsCanBeHoveredAndClicked(t *testing.T) {
+	model, err := NewModel(config.Config{BaseURL: "http://example.com", Model: "test-model", Timeout: time.Second}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	model.width = 90
+	model.height = 32
+	model.screen = screenEditOptions
+	model.edit.kind = editKindDirected
+	model.focus = focusEditDefault
+	model.resize()
+	model.View()
+	region := model.layout.editInstructions
+
+	model.handleMouse(tea.MouseMsg{X: region.x1 + 2, Y: region.y1 + 1, Action: tea.MouseActionMotion})
+	if model.hover != focusEditInstructions {
+		t.Fatalf("expected custom instructions hover, got %v", model.hover)
+	}
+	model.handleMouse(tea.MouseMsg{X: region.x1 + 2, Y: region.y1 + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if model.focus != focusEditInstructions {
+		t.Fatalf("expected click to focus custom instructions, got %v", model.focus)
 	}
 }

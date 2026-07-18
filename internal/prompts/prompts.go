@@ -14,6 +14,7 @@ type Name string
 const (
 	GeneratePrompt       Name = "generate_prompt"
 	EditPrompt           Name = "edit_prompt"
+	DirectedEditPrompt   Name = "directed_edit_prompt"
 	SectionContextPrompt Name = "section_context_prompt"
 	ContinuePrompt       Name = "continue_prompt"
 	NewSectionPrompt     Name = "new_section_prompt"

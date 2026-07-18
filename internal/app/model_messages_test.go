@@ -98,6 +98,9 @@ func TestBuildDirectedEditMessagesIncludesCustomInstructionsSeparately(t *testin
 	}
 
 	foundInstructions := false
+	if !strings.Contains(messages[0].Content, "explicit editing instructions") {
+		t.Fatalf("expected directed editor system prompt, got %q", messages[0].Content)
+	}
 	for _, message := range messages {
 		if message.Name == "user_instructions" && strings.Contains(message.Content, "friendlier voice") {
 			foundInstructions = true

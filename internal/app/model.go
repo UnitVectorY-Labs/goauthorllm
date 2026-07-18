@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	ta "github.com/charmbracelet/bubbles/textarea"
 	ti "github.com/charmbracelet/bubbles/textinput"
@@ -27,6 +28,15 @@ import (
 const autosaveInterval = 2 * time.Second
 const autosaveIdleDelay = 1500 * time.Millisecond
 
+const (
+	colorOrange      = "#F97316"
+	colorOrangeDark  = "#9A3412"
+	colorOrangeLight = "#FFEDD5"
+	colorBlue        = "#2563EB"
+	colorBlueDark    = "#1E3A8A"
+	colorBlueLight   = "#DBEAFE"
+)
+
 type generationMode int
 
 const (
@@ -39,6 +49,7 @@ type workspaceMode int
 const (
 	workspaceGenerate workspaceMode = iota
 	workspaceEdit
+	workspaceDocument
 )
 
 type screenState int
@@ -73,12 +84,16 @@ const (
 	focusChooserInput
 	focusModeGenerate
 	focusModeEdit
+	focusModeDocument
 	focusEditDefault
 	focusEditCustom
 	focusEditInstructions
 	focusApprovalManual
 	focusApprovalAutomatic
 	focusApprovalAll
+	focusEditNext
+	focusWorkspaceTabs
+	focusHistoryPane
 	focusFrontMatter
 	focusEditor
 	focusPrompt
@@ -109,6 +124,7 @@ const (
 	actionChooseTyped        buttonAction = "choose-typed"
 	actionPickGenerate       buttonAction = "pick-generate"
 	actionPickEdit           buttonAction = "pick-edit"
+	actionPickDocument       buttonAction = "pick-document"
 	actionPickDefaultEditor  buttonAction = "pick-default-editor"
 	actionPickCustomEditor   buttonAction = "pick-custom-editor"
 	actionEditOptionsNext    buttonAction = "edit-options-next"
@@ -116,6 +132,7 @@ const (
 	actionPickAutoApproval   buttonAction = "pick-auto-approval"
 	actionPickAllApproval    buttonAction = "pick-all-approval"
 	actionShowHistory        buttonAction = "show-history"
+	actionCancelBusy         buttonAction = "cancel-busy"
 	actionRefreshFiles       buttonAction = "refresh-files"
 	actionBack               buttonAction = "back"
 )
@@ -135,6 +152,8 @@ type keyMap struct {
 	quit       key.Binding
 	moveUp     key.Binding
 	moveDown   key.Binding
+	history    key.Binding
+	message    key.Binding
 }
 
 type rect struct {
@@ -155,21 +174,40 @@ type fileRegion struct {
 	Rect  rect
 }
 
-type layoutState struct {
-	frontMatter    rect
-	editor         rect
-	prompt         rect
-	modeGenerate   rect
-	modeEdit       rect
-	editDefault    rect
-	editCustom     rect
-	approvalManual rect
-	approvalAuto   rect
-	approvalAll    rect
-	buttons        []buttonRegion
-	files          []fileRegion
-	chooserInput   rect
+type choiceRegion struct {
+	Index int
+	Rect  rect
 }
+
+type layoutState struct {
+	frontMatter      rect
+	editor           rect
+	prompt           rect
+	modeGenerate     rect
+	modeEdit         rect
+	modeDocument     rect
+	editDefault      rect
+	editCustom       rect
+	editInstructions rect
+	approvalManual   rect
+	approvalAuto     rect
+	approvalAll      rect
+	buttons          []buttonRegion
+	files            []fileRegion
+	chooserInput     rect
+	tabs             []rect
+	choices          []choiceRegion
+}
+
+type choiceItem struct {
+	title       string
+	description string
+	value       int
+}
+
+func (i choiceItem) Title() string       { return i.title }
+func (i choiceItem) Description() string { return i.description }
+func (i choiceItem) FilterValue() string { return i.title }
 
 type chooserState struct {
 	files    []string
@@ -202,12 +240,17 @@ type editSuggestionResult struct {
 	Suggestion *editSuggestion
 	Note       string
 	Err        error
-	AutoAccept bool
 }
 
 type editMsg struct {
 	id     int
 	result editSuggestionResult
+}
+
+type editApprovalMsg struct {
+	id       int
+	approved bool
+	err      error
 }
 
 type editState struct {
@@ -216,10 +259,12 @@ type editState struct {
 	requesting    bool
 	requestID     int
 	requestCancel context.CancelFunc
+	reviewing     bool
 	kind          editKind
 	approval      approvalMode
 	instructions  ta.Model
 	showHistory   bool
+	historyIndex  int
 }
 
 // Model is the top-level Bubble Tea model for goauthorllm.
@@ -236,11 +281,15 @@ type Model struct {
 	pendingPath string
 	pendingName string
 
-	doc         *document.Document
-	frontMatter ta.Model
-	editor      ta.Model
-	prompt      ta.Model
-	chooser     chooserState
+	doc             *document.Document
+	frontMatter     ta.Model
+	editor          ta.Model
+	prompt          ta.Model
+	chooser         chooserState
+	editorChoices   list.Model
+	approvalChoices list.Model
+	modeChoices     list.Model
+	workspaceTab    int
 
 	spin spinner.Model
 	keys keyMap
@@ -253,6 +302,7 @@ type Model struct {
 	statusLevel     string
 	lastEditAt      time.Time
 	showFrontMatter bool
+	hover           focusTarget
 
 	generating        bool
 	generationID      int
@@ -273,7 +323,7 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
-	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15"))
+	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOrange))
 
 	m := Model{
 		cfg:    cfg,
@@ -296,10 +346,13 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 			quit:       key.NewBinding(key.WithKeys("ctrl+q")),
 			moveUp:     key.NewBinding(key.WithKeys("up")),
 			moveDown:   key.NewBinding(key.WithKeys("down")),
+			history:    key.NewBinding(key.WithKeys("alt+h")),
+			message:    key.NewBinding(key.WithKeys("alt+m")),
 		},
 		statusText:  "Choose a document to begin",
 		statusLevel: "info",
 		lastEditAt:  time.Now(),
+		hover:       focusTarget(-1),
 	}
 
 	m.frontMatter = newTextarea("File metadata and document-specific instructions...", false)
@@ -316,6 +369,20 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 	m.edit.instructions = newTextarea("Describe the directed edit you want the model to make...", false)
 	m.edit.instructions.ShowLineNumbers = false
 	m.edit.instructions.SetHeight(6)
+	m.editorChoices = newChoiceList("Editor", []list.Item{
+		choiceItem{title: "Copy editor", description: "Find one high-priority mechanical correction at a time.", value: int(editKindCopy)},
+		choiceItem{title: "Directed editor", description: "Follow custom instructions for a rewrite, removal, or other targeted change.", value: int(editKindDirected)},
+	})
+	m.approvalChoices = newChoiceList("Approval", []list.Item{
+		choiceItem{title: "Manual review", description: "Show every suggestion and wait for your decision.", value: int(approvalManual)},
+		choiceItem{title: "Automatic review", description: "Auto-apply only suggestions that pass a second safety check.", value: int(approvalAutomatic)},
+		choiceItem{title: "Approve all", description: "Apply every valid suggestion until editing is complete.", value: int(approvalAll)},
+	})
+	m.modeChoices = newChoiceList("Mode", []list.Item{
+		choiceItem{title: "View / edit document", description: "Open the document directly for reading and manual changes.", value: int(workspaceDocument)},
+		choiceItem{title: "Generate", description: "Continue the current section or generate a new section.", value: int(workspaceGenerate)},
+		choiceItem{title: "Edit with AI", description: "Review copy edits or carry out directed editing instructions.", value: int(workspaceEdit)},
+	})
 
 	m.chooser.input = ti.New()
 	m.chooser.input.Placeholder = "draft.md"
@@ -334,7 +401,7 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 		m.pendingName = filepath.Base(m.pendingPath)
 		m.screen = screenModePicker
 		m.screenPath = []screenState{screenChooser}
-		m.focus = focusModeGenerate
+		m.focus = focusModeDocument
 		m.setStatus("Choose how to work with "+m.pendingName, "info")
 	} else {
 		m.screen = screenChooser
@@ -343,6 +410,22 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 
 	m.syncFocus()
 	return m, nil
+}
+
+func newChoiceList(title string, items []list.Item) list.Model {
+	delegate := list.NewDefaultDelegate()
+	delegate.SetHeight(2)
+	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.Foreground(lipgloss.Color(colorOrange)).BorderLeftForeground(lipgloss.Color(colorOrange))
+	delegate.Styles.SelectedDesc = delegate.Styles.SelectedDesc.Foreground(lipgloss.Color(colorBlueLight)).BorderLeftForeground(lipgloss.Color(colorOrange))
+	choices := list.New(items, delegate, 80, 12)
+	choices.Title = title
+	choices.SetShowFilter(false)
+	choices.SetShowHelp(false)
+	choices.SetShowPagination(false)
+	choices.SetShowStatusBar(false)
+	choices.DisableQuitKeybindings()
+	choices.Styles.Title = choices.Styles.Title.Foreground(lipgloss.Color("#F8FAFC")).Background(lipgloss.Color(colorOrangeDark))
+	return choices
 }
 
 func newTextarea(placeholder string, lineNumbers bool) ta.Model {
@@ -355,9 +438,9 @@ func newTextarea(placeholder string, lineNumbers bool) ta.Model {
 	input.BlurredStyle.Base = lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1"))
 	input.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color("#111827"))
 	input.BlurredStyle.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color("#0F172A"))
-	input.FocusedStyle.LineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color("#38BDF8"))
+	input.FocusedStyle.LineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color(colorBlue))
 	input.BlurredStyle.LineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color("#475569"))
-	input.FocusedStyle.CursorLineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
+	input.FocusedStyle.CursorLineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOrange))
 	input.BlurredStyle.CursorLineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8"))
 	input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#475569"))
 	input.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#334155"))
@@ -401,6 +484,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case editMsg:
 		return m.handleEditMsg(msg)
+
+	case editApprovalMsg:
+		return m.handleEditApprovalMsg(msg)
 	}
 
 	if mouseMsg, ok := msg.(tea.MouseMsg); ok {
@@ -418,12 +504,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case screenChooser:
 		return m.updateChooserInputs(msg)
+	case screenModePicker:
+		var cmd tea.Cmd
+		m.modeChoices, cmd = m.modeChoices.Update(msg)
+		return m, cmd
 	case screenEditOptions:
 		if m.focus == focusEditInstructions {
 			var cmd tea.Cmd
 			m.edit.instructions, cmd = m.edit.instructions.Update(msg)
 			return m, cmd
 		}
+		var cmd tea.Cmd
+		m.editorChoices, cmd = m.editorChoices.Update(msg)
+		return m, cmd
+	case screenApprovalPicker:
+		var cmd tea.Cmd
+		m.approvalChoices, cmd = m.approvalChoices.Update(msg)
+		return m, cmd
 		return m, nil
 	case screenWorkspace:
 		return m.updateWorkspaceInputs(msg)
@@ -433,7 +530,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the current UI state.
-func (m Model) View() string {
+func (m *Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
@@ -527,34 +624,74 @@ func (m *Model) handleEditMsg(msg editMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.edit.suggestion = msg.result.Suggestion
-	if msg.result.AutoAccept && msg.result.Suggestion != nil {
-		action := "auto-accepted"
-		if m.edit.approval == approvalAll {
-			action = "approved-all"
-		}
-		if !m.applySuggestion(*msg.result.Suggestion, action) {
+	if msg.result.Suggestion == nil {
+		m.setStatus(firstNonEmptyString(msg.result.Note, "No edit suggestion available"), "muted")
+		return m, nil
+	}
+	m.workspaceTab = 0
+
+	if m.edit.approval == approvalAll {
+		suggestion := *msg.result.Suggestion
+		if !m.applySuggestion(suggestion, "approved-all") {
 			m.setStatus("Automatic edit could not be applied; requesting a repaired suggestion", "error")
 			return m, m.requestEditSuggestion("Repairing an automatic edit suggestion...")
 		}
-		if msg.result.Suggestion.RemainingRounds <= 0 {
+		if suggestion.RemainingRounds <= 0 {
 			m.setStatus("Applied final automatic edit; no further rounds are needed", "success")
 			return m, nil
 		}
 		return m, m.requestEditSuggestion("Applied automatic edit and requesting the next suggestion...")
 	}
-	if msg.result.Note != "" {
-		m.setStatus(msg.result.Note, "success")
-	} else if msg.result.Suggestion == nil {
-		m.setStatus("No edit suggestion available", "muted")
-	} else {
-		m.setStatus("Suggested one copy edit", "success")
+
+	if m.edit.approval == approvalAutomatic {
+		m.setStatus("Suggestion ready; checking whether it is safe to apply automatically...", "info")
+		return m, m.requestEditApproval(*msg.result.Suggestion)
 	}
+	m.setStatus(firstNonEmptyString(msg.result.Note, "Suggestion ready for review"), "success")
 	return m, nil
+}
+
+func (m *Model) handleEditApprovalMsg(msg editApprovalMsg) (tea.Model, tea.Cmd) {
+	if msg.id != m.edit.requestID {
+		return m, nil
+	}
+	m.edit.reviewing = false
+	m.edit.requestCancel = nil
+	if msg.err != nil {
+		if msg.err == context.Canceled {
+			m.setStatus("Automatic review canceled; suggestion kept for manual review", "muted")
+		} else {
+			m.setStatus("Automatic review failed; suggestion kept for manual review: "+msg.err.Error(), "error")
+		}
+		return m, nil
+	}
+	if !msg.approved {
+		m.setStatus("Automatic review requires your decision; suggestion remains visible", "muted")
+		return m, nil
+	}
+	if m.edit.suggestion == nil {
+		return m, nil
+	}
+	suggestion := *m.edit.suggestion
+	if !m.applySuggestion(suggestion, "auto-accepted") {
+		m.setStatus("Approved suggestion became stale; requesting a replacement", "error")
+		return m, m.requestEditSuggestion("Repairing a stale edit suggestion...")
+	}
+	if suggestion.RemainingRounds <= 0 {
+		m.switchWorkspaceTab(1)
+		m.edit.historyIndex = len(m.edit.history) - 1
+		m.setStatus("Applied final automatically approved edit", "success")
+		return m, nil
+	}
+	return m, m.requestEditSuggestion("Applied approved edit and requesting the next suggestion...")
 }
 
 // --- Mouse handling ---
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
+	if msg.Action == tea.MouseActionMotion {
+		return m.updateHover(msg.X, msg.Y), nil
+	}
 	if isWheelMouse(msg) {
 		if m.screen != screenWorkspace {
 			return true, nil
@@ -627,37 +764,53 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			return true, nil
 		}
 	case screenModePicker:
-		if m.layout.modeGenerate.contains(msg.X, msg.Y) {
-			m.focus = focusModeGenerate
-			return true, m.runAction(actionPickGenerate)
-		}
-		if m.layout.modeEdit.contains(msg.X, msg.Y) {
-			m.focus = focusModeEdit
-			return true, m.runAction(actionPickEdit)
+		if index, ok := m.choiceAt(msg.X, msg.Y); ok {
+			m.modeChoices.Select(index)
+			if item, itemOK := m.modeChoices.SelectedItem().(choiceItem); itemOK {
+				switch workspaceMode(item.value) {
+				case workspaceDocument:
+					return true, m.runAction(actionPickDocument)
+				case workspaceEdit:
+					return true, m.runAction(actionPickEdit)
+				default:
+					return true, m.runAction(actionPickGenerate)
+				}
+			}
 		}
 	case screenEditOptions:
-		if m.layout.editDefault.contains(msg.X, msg.Y) {
-			m.focus = focusEditDefault
+		if m.layout.editInstructions.contains(msg.X, msg.Y) && m.edit.kind == editKindDirected {
+			m.focus = focusEditInstructions
+			m.syncFocus()
+			return true, nil
+		}
+		if index, ok := m.choiceAt(msg.X, msg.Y); ok {
+			m.editorChoices.Select(index)
+			if item, itemOK := m.editorChoices.SelectedItem().(choiceItem); itemOK && editKind(item.value) == editKindDirected {
+				return true, m.runAction(actionPickCustomEditor)
+			}
 			return true, m.runAction(actionPickDefaultEditor)
 		}
-		if m.layout.editCustom.contains(msg.X, msg.Y) {
-			m.focus = focusEditCustom
-			return true, m.runAction(actionPickCustomEditor)
-		}
 	case screenApprovalPicker:
-		if m.layout.approvalManual.contains(msg.X, msg.Y) {
-			m.focus = focusApprovalManual
-			return true, m.runAction(actionPickManualApproval)
-		}
-		if m.layout.approvalAuto.contains(msg.X, msg.Y) {
-			m.focus = focusApprovalAutomatic
-			return true, m.runAction(actionPickAutoApproval)
-		}
-		if m.layout.approvalAll.contains(msg.X, msg.Y) {
-			m.focus = focusApprovalAll
-			return true, m.runAction(actionPickAllApproval)
+		if index, ok := m.choiceAt(msg.X, msg.Y); ok {
+			m.approvalChoices.Select(index)
+			if item, itemOK := m.approvalChoices.SelectedItem().(choiceItem); itemOK {
+				switch approvalMode(item.value) {
+				case approvalAutomatic:
+					return true, m.runAction(actionPickAutoApproval)
+				case approvalAll:
+					return true, m.runAction(actionPickAllApproval)
+				default:
+					return true, m.runAction(actionPickManualApproval)
+				}
+			}
 		}
 	case screenWorkspace:
+		for index, tab := range m.layout.tabs {
+			if tab.contains(msg.X, msg.Y) {
+				m.switchWorkspaceTab(index)
+				return true, nil
+			}
+		}
 		if m.layout.frontMatter.contains(msg.X, msg.Y) && m.showFrontMatter {
 			m.focus = focusFrontMatter
 			m.syncFocus()
@@ -676,6 +829,31 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	}
 
 	return false, nil
+}
+
+func (m *Model) updateHover(x, y int) bool {
+	next := focusTarget(-1)
+	switch {
+	case m.showFrontMatter && m.layout.frontMatter.contains(x, y):
+		next = focusFrontMatter
+	case m.screen == screenChooser && m.layout.chooserInput.contains(x, y):
+		next = focusChooserInput
+	case m.screen == screenEditOptions && m.edit.kind == editKindDirected && m.layout.editInstructions.contains(x, y):
+		next = focusEditInstructions
+	case m.screen == screenWorkspace && m.mode == workspaceDocument && m.layout.editor.contains(x, y):
+		next = focusEditor
+	case m.screen == screenWorkspace && m.mode == workspaceGenerate && m.workspaceTab == 0 && m.layout.editor.contains(x, y):
+		next = focusEditor
+	case m.screen == screenWorkspace && m.mode == workspaceGenerate && m.workspaceTab == 1 && m.layout.prompt.contains(x, y):
+		next = focusPrompt
+	case m.screen == screenWorkspace && m.mode == workspaceEdit && m.workspaceTab == 2 && m.layout.editor.contains(x, y):
+		next = focusEditor
+	}
+	if next == m.hover {
+		return false
+	}
+	m.hover = next
+	return true
 }
 
 // --- Key handling ---
@@ -712,12 +890,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, tea.Quit
 	}
+	if m.screen == screenWorkspace && key.Matches(msg, m.keys.message) {
+		return true, m.runAction(actionToggleMessage)
+	}
+	if m.screen == screenWorkspace && m.mode == workspaceEdit && key.Matches(msg, m.keys.history) {
+		return true, m.runAction(actionShowHistory)
+	}
 
 	if m.showFrontMatter && key.Matches(msg, m.keys.back) {
 		return true, m.runAction(actionToggleMessage)
 	}
 
-	if m.busy() {
+	allowBusyNavigation := m.screen == screenWorkspace && (key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.focusPrev) || (m.focus == focusWorkspaceTabs && (msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight)) ||
+		(m.focus == focusHistoryPane && (msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight || msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown)))
+	if m.busy() && !allowBusyNavigation {
 		return true, nil
 	}
 
@@ -760,88 +946,103 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return false, nil
 
 	case screenModePicker:
-		if key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.moveDown) || key.Matches(msg, m.keys.moveUp) || key.Matches(msg, m.keys.focusPrev) {
-			if m.focus == focusModeGenerate {
-				m.focus = focusModeEdit
-			} else {
-				m.focus = focusModeGenerate
-			}
-			return true, nil
-		}
-		if key.Matches(msg, m.keys.continueOp) {
-			return true, m.runAction(actionPickGenerate)
-		}
-		if key.Matches(msg, m.keys.accept) {
-			return true, m.runAction(actionPickEdit)
-		}
 		if key.Matches(msg, m.keys.selectItem) {
-			if m.focus == focusModeEdit {
-				return true, m.runAction(actionPickEdit)
+			if item, ok := m.modeChoices.SelectedItem().(choiceItem); ok {
+				switch workspaceMode(item.value) {
+				case workspaceDocument:
+					return true, m.runAction(actionPickDocument)
+				case workspaceEdit:
+					return true, m.runAction(actionPickEdit)
+				default:
+					return true, m.runAction(actionPickGenerate)
+				}
 			}
-			return true, m.runAction(actionPickGenerate)
 		}
-		return false, nil
+		var cmd tea.Cmd
+		m.modeChoices, cmd = m.modeChoices.Update(msg)
+		return true, cmd
 
 	case screenEditOptions:
-		if key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.focusPrev) || key.Matches(msg, m.keys.moveUp) || key.Matches(msg, m.keys.moveDown) {
-			switch m.focus {
-			case focusEditDefault:
-				m.focus = focusEditCustom
-			case focusEditCustom:
-				if m.edit.kind == editKindDirected {
-					m.focus = focusEditInstructions
-				} else {
-					m.focus = focusEditDefault
-				}
-			default:
+		if key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.focusPrev) {
+			if m.edit.kind == editKindDirected && m.focus == focusEditInstructions {
+				m.focus = focusEditNext
+			} else if m.edit.kind == editKindDirected && m.focus == focusEditNext {
+				m.focus = focusEditInstructions
+			} else {
 				m.focus = focusEditDefault
 			}
 			m.syncFocus()
 			return true, nil
 		}
-		if key.Matches(msg, m.keys.continueOp) {
+		if key.Matches(msg, m.keys.selectItem) && m.focus == focusEditNext {
 			return true, m.runAction(actionEditOptionsNext)
 		}
+		if m.focus == focusEditInstructions {
+			return false, nil
+		}
 		if key.Matches(msg, m.keys.selectItem) {
-			if m.focus == focusEditDefault {
-				return true, m.runAction(actionPickDefaultEditor)
-			}
-			if m.focus == focusEditCustom {
+			if item, ok := m.editorChoices.SelectedItem().(choiceItem); ok {
+				if editKind(item.value) == editKindCopy {
+					m.edit.kind = editKindCopy
+					return true, m.runAction(actionEditOptionsNext)
+				}
 				return true, m.runAction(actionPickCustomEditor)
 			}
 		}
-		return false, nil
+		var cmd tea.Cmd
+		m.editorChoices, cmd = m.editorChoices.Update(msg)
+		return true, cmd
 
 	case screenApprovalPicker:
-		if key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.moveDown) || key.Matches(msg, m.keys.moveUp) || key.Matches(msg, m.keys.focusPrev) {
-			if m.focus == focusApprovalManual {
-				m.focus = focusApprovalAutomatic
-			} else if m.focus == focusApprovalAutomatic {
-				m.focus = focusApprovalAll
-			} else {
-				m.focus = focusApprovalManual
-			}
-			return true, nil
-		}
 		if key.Matches(msg, m.keys.selectItem) {
-			switch m.focus {
-			case focusApprovalAutomatic:
-				return true, m.runAction(actionPickAutoApproval)
-			case focusApprovalAll:
-				return true, m.runAction(actionPickAllApproval)
-			default:
-				return true, m.runAction(actionPickManualApproval)
+			if item, ok := m.approvalChoices.SelectedItem().(choiceItem); ok {
+				switch approvalMode(item.value) {
+				case approvalAutomatic:
+					return true, m.runAction(actionPickAutoApproval)
+				case approvalAll:
+					return true, m.runAction(actionPickAllApproval)
+				default:
+					return true, m.runAction(actionPickManualApproval)
+				}
 			}
 		}
-		return false, nil
+		var cmd tea.Cmd
+		m.approvalChoices, cmd = m.approvalChoices.Update(msg)
+		return true, cmd
 
 	case screenWorkspace:
-		if key.Matches(msg, m.keys.focusNext) {
-			m.advanceWorkspaceFocus(1)
+		if key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.focusPrev) {
+			delta := 1
+			if key.Matches(msg, m.keys.focusPrev) {
+				delta = -1
+			}
+			count := 1
+			if m.mode == workspaceGenerate {
+				count = 2
+			} else if m.mode == workspaceEdit {
+				count = 3
+			}
+			m.switchWorkspaceTab((m.workspaceTab + delta + count) % count)
 			return true, nil
 		}
-		if key.Matches(msg, m.keys.focusPrev) {
-			m.advanceWorkspaceFocus(-1)
+		if m.focus == focusWorkspaceTabs && (msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight) {
+			delta := 1
+			if msg.Type == tea.KeyLeft {
+				delta = -1
+			}
+			count := 2
+			if m.mode == workspaceEdit {
+				count = 3
+			}
+			m.switchWorkspaceTab((m.workspaceTab + delta + count) % count)
+			return true, nil
+		}
+		if m.focus == focusHistoryPane && (msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight || msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown) {
+			delta := 1
+			if msg.Type == tea.KeyLeft || msg.Type == tea.KeyPgUp {
+				delta = -1
+			}
+			m.edit.historyIndex = clamp(m.edit.historyIndex+delta, 0, max(0, len(m.edit.history)-1))
 			return true, nil
 		}
 		if key.Matches(msg, m.keys.save) {
@@ -862,7 +1063,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			if key.Matches(msg, m.keys.newSection) {
 				return true, m.runAction(actionNewSection)
 			}
-		} else {
+		} else if m.mode == workspaceEdit {
 			if key.Matches(msg, m.keys.accept) {
 				return true, m.runAction(actionAcceptSuggestion)
 			}
@@ -952,12 +1153,15 @@ func (m *Model) resize() {
 		m.chooser.input.Width = max(20, contentWidth-2)
 		return
 	case screenModePicker:
+		m.modeChoices.SetSize(max(30, m.width-2), clamp(m.height-8, 9, 16))
 		return
 	case screenEditOptions:
 		m.edit.instructions.SetWidth(contentWidth)
 		m.edit.instructions.SetHeight(clamp(m.height/4, 4, 8))
+		m.editorChoices.SetSize(max(30, m.width-2), clamp(m.height/3, 7, 12))
 		return
 	case screenApprovalPicker:
+		m.approvalChoices.SetSize(max(30, m.width-2), clamp(m.height-8, 9, 16))
 		return
 	case screenWorkspace:
 	}
@@ -973,6 +1177,11 @@ func (m *Model) resize() {
 	statusHeight := lineCount(m.renderStatusBar())
 
 	switch m.mode {
+	case workspaceDocument:
+		buttonRows := buttonRowCount(m.width-2, []string{"Save [Ctrl+S]", "Files [Ctrl+O]", "Message [Alt+M]", "Quit [Ctrl+Q]"})
+		fixedHeight := headerHeight + statusHeight + buttonRows + 5
+		m.editor.SetWidth(contentWidth)
+		m.editor.SetHeight(max(3, m.height-fixedHeight))
 	case workspaceGenerate:
 		buttonRows := buttonRowCount(m.width-2, []string{
 			"Continue [Ctrl+G]",
@@ -982,16 +1191,13 @@ func (m *Model) resize() {
 			"Message",
 			"Quit [Ctrl+Q]",
 		})
-		promptMetaHeight := wrappedLineCount(promptHelpText(), contentWidth)
-		fixedHeight := headerHeight + 3 + statusHeight + buttonRows + 6 + promptMetaHeight
-		available := max(2, m.height-fixedHeight)
-		promptHeight := clamp(available/4, 1, 6)
-		editorHeight := max(1, available-promptHeight)
+		fixedHeight := headerHeight + statusHeight + buttonRows + 7
+		available := max(3, m.height-fixedHeight)
 
 		m.editor.SetWidth(contentWidth)
-		m.editor.SetHeight(editorHeight)
+		m.editor.SetHeight(available)
 		m.prompt.SetWidth(contentWidth)
-		m.prompt.SetHeight(promptHeight)
+		m.prompt.SetHeight(available)
 	case workspaceEdit:
 		buttonRows := buttonRowCount(m.width-2, []string{
 			"Accept [Ctrl+A]",
@@ -1002,14 +1208,11 @@ func (m *Model) resize() {
 			"Message",
 			"Quit [Ctrl+Q]",
 		})
-		helpHeight := wrappedLineCount(editHelpText(), contentWidth)
-		fixedHeight := headerHeight + 3 + statusHeight + buttonRows + 8 + helpHeight
-		available := max(4, m.height-fixedHeight)
-		suggestionHeight := clamp(available/4, 6, 12)
-		editorHeight := max(1, available-suggestionHeight)
+		fixedHeight := headerHeight + statusHeight + buttonRows + 7
+		available := max(3, m.height-fixedHeight)
 
 		m.editor.SetWidth(contentWidth)
-		m.editor.SetHeight(editorHeight)
+		m.editor.SetHeight(available)
 	}
 }
 
@@ -1040,10 +1243,20 @@ func (m *Model) syncFocus() {
 }
 
 func (m *Model) advanceWorkspaceFocus(delta int) {
-	order := []focusTarget{focusEditor}
+	order := []focusTarget{focusWorkspaceTabs}
 	if m.mode == workspaceGenerate {
-		order = append(order, focusPrompt, focusContinueButton, focusNewSectionButton)
+		if m.workspaceTab == 0 {
+			order = append(order, focusEditor)
+		} else {
+			order = append(order, focusPrompt)
+		}
+		order = append(order, focusContinueButton, focusNewSectionButton)
 	} else {
+		if m.workspaceTab == 1 {
+			order = append(order, focusHistoryPane)
+		} else if m.workspaceTab == 2 {
+			order = append(order, focusEditor)
+		}
 		order = append(order, focusAcceptButton, focusSkipButton, focusRefreshButton)
 	}
 	order = append(order, focusSaveButton, focusFilesButton, focusMessageButton, focusQuitButton)
@@ -1060,107 +1273,191 @@ func (m *Model) advanceWorkspaceFocus(delta int) {
 	m.syncFocus()
 }
 
+func (m *Model) switchWorkspaceTab(index int) {
+	m.workspaceTab = index
+	if m.mode == workspaceGenerate {
+		if index == 1 {
+			m.focus = focusPrompt
+		} else {
+			m.focus = focusEditor
+		}
+	} else {
+		switch index {
+		case 1:
+			m.focus = focusHistoryPane
+		case 2:
+			m.focus = focusEditor
+		default:
+			m.focus = focusWorkspaceTabs
+		}
+	}
+	m.syncFocus()
+	m.resize()
+}
+
 // --- Rendering ---
 
-func (m Model) renderWorkspace() string {
+func (m *Model) renderWorkspace() string {
 	if m.mode == workspaceEdit {
 		return m.renderEditWorkspace()
+	}
+	if m.mode == workspaceDocument {
+		return m.renderDocumentWorkspace()
 	}
 	return m.renderGenerateWorkspace()
 }
 
-func (m Model) renderGenerateWorkspace() string {
+func (m *Model) renderDocumentWorkspace() string {
 	m.layout = layoutState{}
-
 	var lines []string
 	y := 0
-
 	header := m.renderHeader()
 	lines = append(lines, header, "")
 	y += lineCount(header) + 1
+	pane := m.renderPane("Document", m.editor.View(), m.focus == focusEditor, m.hover == focusEditor, m.doc != nil && m.doc.Dirty)
+	m.layout.editor = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(pane) - 1}
+	lines = append(lines, pane, "")
+	y += lineCount(pane) + 1
+	status := m.renderStatusBar()
+	lines = append(lines, status)
+	y += lineCount(status)
+	buttons := []actionButton{
+		{Action: actionSave, Label: "Save [Ctrl+S]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusSaveButton},
+		{Action: actionFiles, Label: "Files [Ctrl+O]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusFilesButton},
+		{Action: actionToggleMessage, Label: "Message [Alt+M]", Background: colorBlue, Foreground: colorBlueLight, Focus: focusMessageButton},
+		{Action: actionQuit, Label: "Quit [Ctrl+Q]", Background: "#3F3F46", Foreground: "#F4F4F5", Focus: focusQuitButton},
+	}
+	lines = append(lines, m.renderButtons(buttons, y))
+	return strings.Join(lines, "\n")
+}
 
-	editor := m.renderPane("Document", m.editor.View(), m.focus == focusEditor, m.doc != nil && m.doc.Dirty)
-	m.layout.editor = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(editor) - 1}
-	lines = append(lines, editor, "")
-	y += lineCount(editor) + 1
-
-	promptMeta := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(promptHelpText())
-	promptBody := m.prompt.View() + "\n" + promptMeta
-	prompt := m.renderPane("Generation Guidance", promptBody, m.focus == focusPrompt, false)
-	m.layout.prompt = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(prompt) - 1}
-	lines = append(lines, prompt, "")
-	y += lineCount(prompt) + 1
+func (m *Model) renderGenerateWorkspace() string {
+	m.layout = layoutState{}
+	var lines []string
+	y := 0
+	header := m.renderHeader()
+	lines = append(lines, header, "")
+	y += lineCount(header) + 1
+	tabs := m.renderTabs([]string{"Document", "Guidance"}, y)
+	lines = append(lines, tabs, "")
+	y += lineCount(tabs) + 1
+	if m.workspaceTab == 1 {
+		promptMeta := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(promptHelpText())
+		pane := m.renderPane("Generation Guidance", m.prompt.View()+"\n"+promptMeta, m.focus == focusPrompt, m.hover == focusPrompt, false)
+		m.layout.prompt = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(pane) - 1}
+		lines = append(lines, pane, "")
+		y += lineCount(pane) + 1
+	} else {
+		pane := m.renderPane("Document", m.editor.View(), m.focus == focusEditor, m.hover == focusEditor, m.doc != nil && m.doc.Dirty)
+		m.layout.editor = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(pane) - 1}
+		lines = append(lines, pane, "")
+		y += lineCount(pane) + 1
+	}
 
 	status := m.renderStatusBar()
 	lines = append(lines, status)
 	y += lineCount(status)
 
-	buttons := []actionButton{
-		{Action: actionContinue, Label: "Continue [Ctrl+G]", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusContinueButton},
-		{Action: actionNewSection, Label: "New Section [Ctrl+N]", Background: "#1D4ED8", Foreground: "#DBEAFE", Focus: focusNewSectionButton},
-		{Action: actionSave, Label: "Save [Ctrl+S]", Background: "#7C2D12", Foreground: "#FFEDD5", Focus: focusSaveButton},
-		{Action: actionFiles, Label: "Files [Ctrl+O]", Background: "#312E81", Foreground: "#E0E7FF", Focus: focusFilesButton},
-		{Action: actionToggleMessage, Label: "Message", Background: "#0F766E", Foreground: "#CCFBF1", Focus: focusMessageButton},
-		{Action: actionQuit, Label: "Quit [Ctrl+Q]", Background: "#3F3F46", Foreground: "#F4F4F5", Focus: focusQuitButton},
+	var buttons []actionButton
+	if m.generating {
+		buttons = append(buttons, actionButton{Action: actionCancelBusy, Label: "Cancel [Esc]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusTarget(-1)})
+	} else {
+		buttons = append(buttons,
+			actionButton{Action: actionContinue, Label: "Continue [Ctrl+G]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusContinueButton},
+			actionButton{Action: actionNewSection, Label: "New Section [Ctrl+N]", Background: colorBlue, Foreground: colorBlueLight, Focus: focusNewSectionButton},
+		)
+		buttons = append(buttons,
+			actionButton{Action: actionSave, Label: "Save [Ctrl+S]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusSaveButton},
+			actionButton{Action: actionFiles, Label: "Files [Ctrl+O]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusFilesButton},
+			actionButton{Action: actionToggleMessage, Label: "Message [Alt+M]", Background: colorBlue, Foreground: colorBlueLight, Focus: focusMessageButton},
+		)
 	}
+	buttons = append(buttons, actionButton{Action: actionQuit, Label: "Quit [Ctrl+Q]", Background: "#3F3F46", Foreground: "#F4F4F5", Focus: focusQuitButton})
 	lines = append(lines, m.renderButtons(buttons, y))
 
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) renderEditWorkspace() string {
+func (m *Model) renderEditWorkspace() string {
 	m.layout = layoutState{}
-
 	var lines []string
 	y := 0
-
 	header := m.renderHeader()
 	lines = append(lines, header, "")
 	y += lineCount(header) + 1
-
-	editor := m.renderPane("Document", m.editor.View(), m.focus == focusEditor, m.doc != nil && m.doc.Dirty)
-	m.layout.editor = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(editor) - 1}
-	lines = append(lines, editor, "")
-	y += lineCount(editor) + 1
-
-	suggestion := m.renderPane("Edit Suggestion", m.renderSuggestionBody(), suggestionFocused(m.focus), false)
-	m.layout.prompt = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(suggestion) - 1}
-	lines = append(lines, suggestion, "")
-	y += lineCount(suggestion) + 1
+	tabs := m.renderTabs([]string{"Suggestion", fmt.Sprintf("History (%d)", len(m.edit.history)), "Document"}, y)
+	lines = append(lines, tabs, "")
+	y += lineCount(tabs) + 1
+	var pane string
+	switch m.workspaceTab {
+	case 1:
+		pane = m.renderPane("Edit History", m.renderEditHistoryBody(), m.focus == focusWorkspaceTabs, false, false)
+	case 2:
+		pane = m.renderPane("Document", m.editor.View(), m.focus == focusEditor, m.hover == focusEditor, m.doc != nil && m.doc.Dirty)
+		m.layout.editor = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(pane) - 1}
+	default:
+		pane = m.renderPane("Edit Suggestion", m.renderSuggestionBody(), suggestionFocused(m.focus) || m.focus == focusWorkspaceTabs, false, false)
+		m.layout.prompt = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(pane) - 1}
+	}
+	lines = append(lines, pane, "")
+	y += lineCount(pane) + 1
 
 	status := m.renderStatusBar()
 	lines = append(lines, status)
 	y += lineCount(status)
 
-	buttons := []actionButton{
-		{Action: actionAcceptSuggestion, Label: "Accept [Ctrl+A]", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusAcceptButton},
-		{Action: actionSkipSuggestion, Label: "Skip [Ctrl+K]", Background: "#9A3412", Foreground: "#FFEDD5", Focus: focusSkipButton},
-		{Action: actionRefreshSuggestion, Label: "Refresh [Ctrl+R]", Background: "#0F766E", Foreground: "#CCFBF1", Focus: focusRefreshButton},
-		{Action: actionShowHistory, Label: "History", Background: "#4C1D95", Foreground: "#EDE9FE", Focus: focusTarget(-1)},
-		{Action: actionSave, Label: "Save [Ctrl+S]", Background: "#7C2D12", Foreground: "#FFEDD5", Focus: focusSaveButton},
-		{Action: actionFiles, Label: "Files [Ctrl+O]", Background: "#312E81", Foreground: "#E0E7FF", Focus: focusFilesButton},
-		{Action: actionToggleMessage, Label: "Message", Background: "#0F766E", Foreground: "#CCFBF1", Focus: focusMessageButton},
-		{Action: actionQuit, Label: "Quit [Ctrl+Q]", Background: "#3F3F46", Foreground: "#F4F4F5", Focus: focusQuitButton},
+	var buttons []actionButton
+	if m.edit.requesting || m.edit.reviewing {
+		buttons = append(buttons,
+			actionButton{Action: actionCancelBusy, Label: "Cancel [Esc]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusTarget(-1)},
+			actionButton{Action: actionShowHistory, Label: "History [Alt+H]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)},
+		)
+	} else {
+		if m.edit.suggestion != nil {
+			buttons = append(buttons,
+				actionButton{Action: actionAcceptSuggestion, Label: "Accept [Ctrl+A]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusAcceptButton},
+				actionButton{Action: actionSkipSuggestion, Label: "Skip [Ctrl+K]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusSkipButton},
+			)
+		}
+		buttons = append(buttons, actionButton{Action: actionRefreshSuggestion, Label: "Refresh [Ctrl+R]", Background: colorBlue, Foreground: colorBlueLight, Focus: focusRefreshButton})
+		buttons = append(buttons,
+			actionButton{Action: actionShowHistory, Label: "History [Alt+H]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)},
+			actionButton{Action: actionSave, Label: "Save [Ctrl+S]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusSaveButton},
+			actionButton{Action: actionFiles, Label: "Files [Ctrl+O]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusFilesButton},
+			actionButton{Action: actionToggleMessage, Label: "Message [Alt+M]", Background: colorBlue, Foreground: colorBlueLight, Focus: focusMessageButton},
+		)
 	}
+	buttons = append(buttons, actionButton{Action: actionQuit, Label: "Quit [Ctrl+Q]", Background: "#3F3F46", Foreground: "#F4F4F5", Focus: focusQuitButton})
 	lines = append(lines, m.renderButtons(buttons, y))
 
 	return strings.Join(lines, "\n")
+}
+
+func (m *Model) renderTabs(labels []string, y int) string {
+	var rendered []string
+	x := 0
+	for index, label := range labels {
+		style := lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("#94A3B8")).Background(lipgloss.Color("#1E293B"))
+		if m.workspaceTab == index {
+			style = style.Foreground(lipgloss.Color("#F8FAFC")).Background(lipgloss.Color(colorOrangeDark)).Bold(true)
+		}
+		part := style.Render(label)
+		width := lipgloss.Width(part)
+		m.layout.tabs = append(m.layout.tabs, rect{x1: x, y1: y, x2: x + width - 1, y2: y})
+		rendered = append(rendered, part)
+		x += width + 1
+	}
+	row := strings.Join(rendered, " ")
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render("Tab / Shift+Tab to switch")
+	if lipgloss.Width(row)+2+lipgloss.Width(hint) <= max(20, m.width-2) {
+		row += "  " + hint
+	}
+	return row
 }
 
 func (m Model) renderSuggestionBody() string {
 	var parts []string
 	parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(editHelpText()))
-	if m.edit.showHistory {
-		parts = append(parts, "", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Session Edit History"))
-		if len(m.edit.history) == 0 {
-			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("No edits have been applied or skipped in this session."))
-		} else {
-			for _, entry := range m.edit.history {
-				parts = append(parts, fmt.Sprintf("%s: %q → %q", entry.Action, truncateToWidth(entry.OldText, 36), truncateToWidth(entry.NewText, 36)))
-			}
-		}
-		return strings.Join(parts, "\n")
-	}
 
 	switch {
 	case m.edit.requesting:
@@ -1188,8 +1485,33 @@ func (m Model) renderSuggestionBody() string {
 			"",
 			lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(fmt.Sprintf("Exact match count in document: %d", matchCount)),
 		)
+		if m.edit.reviewing {
+			parts = append(parts, "", lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render(m.spin.View()+" Checking automatic approval; this suggestion remains available for review."))
+		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func (m Model) renderEditHistoryBody() string {
+	if len(m.edit.history) == 0 {
+		return "No edits have been applied or skipped in this session.\n\nUse ←/→ to move through entries once history is available."
+	}
+	index := clamp(m.edit.historyIndex, 0, len(m.edit.history)-1)
+	entry := m.edit.history[index]
+	ops := diff.Diff(entry.OldText, entry.NewText)
+	defaultStyle := lipgloss.NewStyle()
+	deleteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
+	insertStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E"))
+	return strings.Join([]string{
+		fmt.Sprintf("Edit %d of %d · %s", index+1, len(m.edit.history), entry.Action),
+		"Use ←/→ to page through the session history.",
+		"",
+		lipgloss.NewStyle().Bold(true).Render("Old"),
+		diff.FormatOld(ops, defaultStyle, deleteStyle),
+		"",
+		lipgloss.NewStyle().Bold(true).Render("New"),
+		diff.FormatNew(ops, defaultStyle, insertStyle),
+	}, "\n")
 }
 
 func suggestionFocused(target focusTarget) bool {
@@ -1201,14 +1523,14 @@ func suggestionFocused(target focusTarget) bool {
 	}
 }
 
-func (m Model) renderFrontMatterModal() string {
+func (m *Model) renderFrontMatterModal() string {
 	m.layout = layoutState{}
 
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Document Instructions")
 	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("Edit file metadata and document-specific system guidance. Esc closes this panel.")
 	header := lipgloss.JoinVertical(lipgloss.Left, title, subtitle)
 
-	pane := m.renderPane("Front Matter", m.frontMatter.View(), true, m.doc != nil && m.doc.Dirty)
+	pane := m.renderPane("Front Matter", m.frontMatter.View(), true, m.hover == focusFrontMatter, m.doc != nil && m.doc.Dirty)
 	m.layout.frontMatter = rect{x1: 0, y1: lineCount(header) + 1, x2: max(0, m.width-1), y2: lineCount(header) + lineCount(pane)}
 	status := m.renderStatusBar()
 	buttons := []actionButton{
@@ -1224,7 +1546,7 @@ func (m Model) renderFrontMatterModal() string {
 	return strings.Join(content, "\n")
 }
 
-func (m Model) renderChooser() string {
+func (m *Model) renderChooser() string {
 	m.layout = layoutState{}
 
 	contentWidth := max(60, m.width-2)
@@ -1251,7 +1573,7 @@ func (m Model) renderChooser() string {
 		}
 	}
 
-	fileBox := m.renderPane("Documents", strings.Join(fileLines, "\n"), m.focus == focusChooserList, false)
+	fileBox := m.renderPane("Documents", strings.Join(fileLines, "\n"), m.focus == focusChooserList, false, false)
 	lines = append(lines, fileBox)
 	fileBoxHeight := lineCount(fileBox)
 	for i := range m.chooser.files {
@@ -1270,7 +1592,7 @@ func (m Model) renderChooser() string {
 	lines = append(lines, "")
 	y++
 
-	inputBox := m.renderPane("New Document Name", m.chooser.input.View(), m.focus == focusChooserInput, false)
+	inputBox := m.renderPane("New Document Name", m.chooser.input.View(), m.focus == focusChooserInput, m.hover == focusChooserInput, false)
 	m.layout.chooserInput = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(inputBox) - 1}
 	lines = append(lines, inputBox)
 	y += lineCount(inputBox)
@@ -1283,12 +1605,12 @@ func (m Model) renderChooser() string {
 	y += lineCount(status)
 
 	buttons := []actionButton{
-		{Action: actionChooseSelected, Label: "Use Selected", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusTarget(-1)},
-		{Action: actionChooseTyped, Label: "Use Typed", Background: "#1D4ED8", Foreground: "#DBEAFE", Focus: focusTarget(-1)},
-		{Action: actionRefreshFiles, Label: "Refresh [Ctrl+R]", Background: "#7C3AED", Foreground: "#F3E8FF", Focus: focusTarget(-1)},
+		{Action: actionChooseSelected, Label: "Use Selected", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusTarget(-1)},
+		{Action: actionChooseTyped, Label: "Use Typed", Background: colorBlue, Foreground: colorBlueLight, Focus: focusTarget(-1)},
+		{Action: actionRefreshFiles, Label: "Refresh [Ctrl+R]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)},
 	}
 	if len(m.screenPath) > 0 {
-		buttons = append(buttons, actionButton{Action: actionBack, Label: "Back [Esc]", Background: "#334155", Foreground: "#E2E8F0", Focus: focusTarget(-1)})
+		buttons = append(buttons, actionButton{Action: actionBack, Label: "Back [Esc]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)})
 	}
 	buttons = append(buttons, actionButton{Action: actionQuit, Label: "Quit [Ctrl+Q]", Background: "#3F3F46", Foreground: "#F4F4F5", Focus: focusTarget(-1)})
 	lines = append(lines, m.renderButtons(buttons, y))
@@ -1296,98 +1618,59 @@ func (m Model) renderChooser() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) renderModePicker() string {
+func (m *Model) renderModePicker() string {
 	m.layout = layoutState{}
-
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Choose a Mode")
 	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("Pick how goauthorllm should work with " + truncateToWidth(m.pendingName, max(20, m.width-8)))
-
-	generateCard := m.renderPane(
-		"Generate",
-		"Extend the document with model-generated markdown.\n\nUse this mode to continue the current section or create the next one.",
-		m.focus == focusModeGenerate,
-		false,
-	)
-	editCard := m.renderPane(
-		"Edit",
-		"Request one high-priority copy edit at a time.\n\nAccept applies an exact replacement. Skip asks for the next suggestion.",
-		m.focus == focusModeEdit,
-		false,
-	)
-
-	headerLines := []string{title, subtitle, ""}
-	y := lineCount(strings.Join(headerLines, "\n"))
-	m.layout.modeGenerate = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(generateCard) - 1}
-	y += lineCount(generateCard) + 1
-	m.layout.modeEdit = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(editCard) - 1}
-
-	status := m.renderStatusBar()
+	content := []string{title, subtitle, "", m.modeChoices.View(), "", m.renderStatusBar()}
+	m.setChoiceRegions(3, len(m.modeChoices.Items()))
+	y := lineCount(strings.Join(content, "\n"))
 	buttons := []actionButton{
-		{Action: actionPickGenerate, Label: "Generate [Enter]", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusModeGenerate},
-		{Action: actionPickEdit, Label: "Edit [Ctrl+A]", Background: "#9A3412", Foreground: "#FFEDD5", Focus: focusModeEdit},
-		{Action: actionBack, Label: "Back [Esc]", Background: "#334155", Foreground: "#E2E8F0", Focus: focusTarget(-1)},
+		{Action: actionBack, Label: "Back [Esc]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)},
 		{Action: actionQuit, Label: "Quit [Ctrl+Q]", Background: "#3F3F46", Foreground: "#F4F4F5", Focus: focusTarget(-1)},
 	}
-
-	content := []string{
-		title,
-		subtitle,
-		"",
-		generateCard,
-		"",
-		editCard,
-		"",
-		status,
-	}
-	y = lineCount(strings.Join(content, "\n"))
 	content = append(content, m.renderButtons(buttons, y))
 	return strings.Join(content, "\n")
 }
 
-func (m Model) renderEditOptions() string {
+func (m *Model) renderEditOptions() string {
 	m.layout = layoutState{}
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Choose Editing Options")
-	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("First select the editor. Custom instructions steer a directed edit.")
-	defaultCard := m.renderPane("Copy Editor", "Use the built-in copy editing prompt for one high-priority correction at a time.", m.focus == focusEditDefault, false)
-	customCard := m.renderPane("Custom Editor", "Use your instructions to direct the edit. Select this card, then write the instructions below.", m.focus == focusEditCustom, false)
-	instructions := m.renderPane("Custom Editing Instructions", m.edit.instructions.View(), m.focus == focusEditInstructions, false)
-	content := []string{title, subtitle, "", defaultCard, "", customCard, "", instructions, "", m.renderStatusBar()}
-	y := lineCount(title) + lineCount(subtitle) + 2
-	m.layout.editDefault = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(defaultCard) - 1}
-	y += lineCount(defaultCard) + 1
-	m.layout.editCustom = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(customCard) - 1}
-	y = lineCount(strings.Join(content, "\n"))
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Choose an Editor")
+	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("Use ↑/↓ and Enter. Tab moves between custom instructions and Next when needed.")
+	listView := m.editorChoices.View()
+	m.setChoiceRegions(3, len(m.editorChoices.Items()))
+	content := []string{title, subtitle, "", listView}
+	if m.edit.kind == editKindDirected {
+		instructions := m.renderPane("Custom Editing Instructions", m.edit.instructions.View(), m.focus == focusEditInstructions, m.hover == focusEditInstructions, false)
+		instructionsY := lineCount(strings.Join(content, "\n")) + 1
+		m.layout.editInstructions = rect{x1: 0, y1: instructionsY, x2: max(0, m.width-1), y2: instructionsY + lineCount(instructions) - 1}
+		content = append(content, "", instructions)
+	}
+	content = append(content, "", m.renderStatusBar())
+	y := lineCount(strings.Join(content, "\n"))
 	buttons := []actionButton{
-		{Action: actionPickDefaultEditor, Label: "Copy Editor", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusEditDefault},
-		{Action: actionPickCustomEditor, Label: "Custom Editor", Background: "#1D4ED8", Foreground: "#DBEAFE", Focus: focusEditCustom},
-		{Action: actionEditOptionsNext, Label: "Next [Ctrl+G]", Background: "#7C3AED", Foreground: "#F3E8FF", Focus: focusTarget(-1)},
-		{Action: actionBack, Label: "Back [Esc]", Background: "#334155", Foreground: "#E2E8F0", Focus: focusTarget(-1)},
+		{Action: actionEditOptionsNext, Label: "Next [Enter]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusEditNext},
+		{Action: actionBack, Label: "Back [Esc]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)},
 	}
 	return strings.Join(append(content, m.renderButtons(buttons, y)), "\n")
 }
 
-func (m Model) renderApprovalPicker() string {
+func (m *Model) renderApprovalPicker() string {
 	m.layout = layoutState{}
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Choose Approval Mode")
-	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("Choose how accepted suggestions progress through the document.")
-	manual := m.renderPane("Manual Review", "Show every suggestion. You accept or skip each one.", m.focus == focusApprovalManual, false)
-	auto := m.renderPane("Automatic Review", "A second model check auto-applies only safe copy edits or edits that clearly conform to your custom instructions. Other suggestions remain for review.", m.focus == focusApprovalAutomatic, false)
-	all := m.renderPane("Approve All", "Apply every valid suggestion automatically until the editor reports no useful rounds remain.", m.focus == focusApprovalAll, false)
-	content := []string{title, subtitle, "", manual, "", auto, "", all, "", m.renderStatusBar()}
-	y := lineCount(title) + lineCount(subtitle) + 2
-	m.layout.approvalManual = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(manual) - 1}
-	y += lineCount(manual) + 1
-	m.layout.approvalAuto = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(auto) - 1}
-	y += lineCount(auto) + 1
-	m.layout.approvalAll = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(all) - 1}
-	y = lineCount(strings.Join(content, "\n"))
-	buttons := []actionButton{
-		{Action: actionPickManualApproval, Label: "Manual", Background: "#7C2D12", Foreground: "#FFEDD5", Focus: focusApprovalManual},
-		{Action: actionPickAutoApproval, Label: "Automatic", Background: "#14532D", Foreground: "#DCFCE7", Focus: focusApprovalAutomatic},
-		{Action: actionPickAllApproval, Label: "Approve All", Background: "#1D4ED8", Foreground: "#DBEAFE", Focus: focusApprovalAll},
-		{Action: actionBack, Label: "Back [Esc]", Background: "#334155", Foreground: "#E2E8F0", Focus: focusTarget(-1)},
-	}
+	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("Use ↑/↓ and Enter to begin editing. Esc returns to editor selection.")
+	content := []string{title, subtitle, "", m.approvalChoices.View(), "", m.renderStatusBar()}
+	m.setChoiceRegions(3, len(m.approvalChoices.Items()))
+	y := lineCount(strings.Join(content, "\n"))
+	buttons := []actionButton{{Action: actionBack, Label: "Back [Esc]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)}}
 	return strings.Join(append(content, m.renderButtons(buttons, y)), "\n")
+}
+
+func (m *Model) setChoiceRegions(listTop, count int) {
+	for index := 0; index < count; index++ {
+		y := listTop + 2 + index*3
+		m.layout.choices = append(m.layout.choices, choiceRegion{Index: index, Rect: rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + 1}})
+	}
 }
 
 func (m Model) renderHeader() string {
@@ -1400,7 +1683,7 @@ func (m Model) renderHeader() string {
 	}
 	filePart := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(truncateToWidth(fileName, max(12, m.width/3)))
 
-	modeBadge := badge(m.mode.label(), "#0F766E", "#CCFBF1")
+	modeBadge := badge(m.mode.label(), colorOrangeDark, colorOrangeLight)
 	if m.screen == screenModePicker {
 		modeBadge = badge("mode select", "#334155", "#E2E8F0")
 	}
@@ -1416,12 +1699,19 @@ func (m Model) renderHeader() string {
 	return truncateRenderedLine(lipgloss.JoinHorizontal(lipgloss.Top, title, "  ", filePart, "  ", modeBadge, "  ", dirty), max(20, m.width-2))
 }
 
-func (m Model) renderPane(title, body string, focused, dirty bool) string {
+func (m Model) renderPane(title, body string, focused, hovered, dirty bool) string {
 	borderColor := lipgloss.Color("#334155")
 	titleColor := lipgloss.Color("#CBD5E1")
+	if hovered {
+		borderColor = lipgloss.Color(colorBlue)
+		titleColor = lipgloss.Color(colorBlueLight)
+	}
 	if focused {
-		borderColor = lipgloss.Color("#22C55E")
+		borderColor = lipgloss.Color(colorOrange)
 		titleColor = lipgloss.Color("#F8FAFC")
+	}
+	if focused && hovered {
+		borderColor = lipgloss.Color(colorOrangeLight)
 	}
 
 	label := title
@@ -1435,7 +1725,7 @@ func (m Model) renderPane(title, body string, focused, dirty bool) string {
 		BorderForeground(borderColor).
 		Render(lipgloss.JoinVertical(
 			lipgloss.Left,
-			lipgloss.NewStyle().Bold(true).Foreground(titleColor).Render(label),
+			lipgloss.NewStyle().Bold(true).Underline(hovered).Foreground(titleColor).Render(label),
 			body,
 		))
 }
@@ -1534,6 +1824,15 @@ func (m *Model) fileAt(x, y int) (int, bool) {
 	return 0, false
 }
 
+func (m *Model) choiceAt(x, y int) (int, bool) {
+	for _, choice := range m.layout.choices {
+		if choice.Rect.contains(x, y) {
+			return choice.Index, true
+		}
+	}
+	return 0, false
+}
+
 // --- Actions ---
 
 func (m *Model) runAction(action buttonAction) tea.Cmd {
@@ -1551,13 +1850,13 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		return m.startGeneration(modeNewSection)
 
 	case actionAcceptSuggestion:
-		if m.mode != workspaceEdit || m.doc == nil || m.edit.requesting || m.edit.suggestion == nil {
+		if m.mode != workspaceEdit || m.doc == nil || m.edit.requesting || m.edit.reviewing || m.edit.suggestion == nil {
 			return nil
 		}
 		return m.acceptSuggestion()
 
 	case actionSkipSuggestion:
-		if m.mode != workspaceEdit || m.doc == nil || m.edit.requesting {
+		if m.mode != workspaceEdit || m.doc == nil || m.edit.requesting || m.edit.reviewing {
 			return nil
 		}
 		if m.edit.suggestion != nil {
@@ -1567,7 +1866,7 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		return m.requestEditSuggestion("Requesting the next edit suggestion...")
 
 	case actionRefreshSuggestion:
-		if m.mode != workspaceEdit || m.doc == nil || m.edit.requesting {
+		if m.mode != workspaceEdit || m.doc == nil || m.edit.requesting || m.edit.reviewing {
 			return nil
 		}
 		return m.requestEditSuggestion("Refreshing edit suggestion...")
@@ -1618,7 +1917,8 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		m.pendingName = filepath.Base(m.pendingPath)
 		m.pushScreen(screenChooser)
 		m.screen = screenModePicker
-		m.focus = focusModeGenerate
+		m.focus = focusModeDocument
+		m.modeChoices.Select(0)
 		m.resize()
 		m.setStatus("Choose how to work with "+m.pendingName, "info")
 		return nil
@@ -1633,7 +1933,8 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		m.pendingName = filepath.Base(m.pendingPath)
 		m.pushScreen(screenChooser)
 		m.screen = screenModePicker
-		m.focus = focusModeGenerate
+		m.focus = focusModeDocument
+		m.modeChoices.Select(0)
 		m.resize()
 		m.setStatus("Choose how to work with "+m.pendingName, "info")
 		return nil
@@ -1641,12 +1942,22 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 	case actionPickGenerate:
 		return m.enterWorkspace(workspaceGenerate)
 
+	case actionPickDocument:
+		return m.enterWorkspace(workspaceDocument)
+
 	case actionPickEdit:
 		m.screen = screenEditOptions
 		m.screenPath = append(m.screenPath, screenModePicker)
 		m.edit.kind = editKindCopy
 		m.edit.approval = approvalManual
+		m.edit.suggestion = nil
+		m.edit.history = nil
+		m.edit.historyIndex = 0
+		m.edit.requesting = false
+		m.edit.reviewing = false
 		m.edit.instructions.SetValue("")
+		m.editorChoices.Select(0)
+		m.approvalChoices.Select(0)
 		m.focus = focusEditDefault
 		m.resize()
 		m.syncFocus()
@@ -1657,14 +1968,13 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		m.edit.kind = editKindCopy
 		m.focus = focusEditDefault
 		m.syncFocus()
-		m.setStatus("Copy editor selected. Press Ctrl+G for approval options.", "muted")
-		return nil
+		return m.runAction(actionEditOptionsNext)
 
 	case actionPickCustomEditor:
 		m.edit.kind = editKindDirected
 		m.focus = focusEditInstructions
 		m.syncFocus()
-		m.setStatus("Custom editor selected. Write instructions, then press Ctrl+G.", "muted")
+		m.setStatus("Custom editor selected. Write instructions, then Tab to Next and press Enter.", "muted")
 		return nil
 
 	case actionEditOptionsNext:
@@ -1691,7 +2001,11 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		return m.enterWorkspace(workspaceEdit)
 
 	case actionShowHistory:
-		m.edit.showHistory = !m.edit.showHistory
+		m.switchWorkspaceTab(1)
+		return nil
+
+	case actionCancelBusy:
+		m.cancelBusyRequest()
 		return nil
 
 	case actionRefreshFiles:
@@ -1735,13 +2049,13 @@ func (m *Model) goBack() tea.Cmd {
 		m.focus = focusChooserList
 		m.setStatus("Choose a document", "info")
 	case screenModePicker:
-		m.focus = focusModeGenerate
+		m.focus = focusModeDocument
 		if m.pendingName != "" {
 			m.setStatus("Choose how to work with "+m.pendingName, "info")
 		}
 	case screenEditOptions:
-		m.focus = focusModeEdit
-		m.setStatus("Choose how to work with "+m.pendingName, "info")
+		m.focus = focusEditDefault
+		m.setStatus("Choose an editor", "info")
 	case screenApprovalPicker:
 		m.focus = focusEditDefault
 		m.setStatus("Choose an editor", "info")
@@ -1769,11 +2083,13 @@ func (m *Model) enterWorkspace(mode workspaceMode) tea.Cmd {
 	m.mode = mode
 	m.screen = screenWorkspace
 	m.screenPath = []screenState{screenChooser, screenModePicker}
-	m.focus = focusEditor
-	m.showFrontMatter = false
-	if mode != workspaceEdit {
-		m.edit = editState{}
+	m.workspaceTab = 0
+	if mode == workspaceEdit {
+		m.focus = focusWorkspaceTabs
+	} else {
+		m.focus = focusEditor
 	}
+	m.showFrontMatter = false
 	m.resize()
 	m.syncFocus()
 	m.setStatus("Opened "+filepath.Base(m.doc.Path)+" in "+mode.label()+" mode", "success")
@@ -1935,7 +2251,6 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 	systemMessage := m.doc.SystemMessage
 	history := append([]editHistoryEntry(nil), m.edit.history...)
 	kind := m.edit.kind
-	approval := m.edit.approval
 	instructions := m.edit.instructions.Value()
 	client := m.client
 	overrides := m.cfg.MessageOverrides
@@ -1944,10 +2259,29 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 	m.edit.requestCancel = cancel
 	events := make(chan editSuggestionResult, 1)
 	go func() {
-		events <- fetchEditSuggestion(ctx, client, body, systemMessage, history, overrides, kind, approval, instructions)
+		events <- fetchEditSuggestion(ctx, client, body, systemMessage, history, overrides, kind, instructions)
 		close(events)
 	}()
 	return tea.Batch(m.spin.Tick, waitForEditSuggestion(events, id))
+}
+
+func (m *Model) requestEditApproval(suggestion editSuggestion) tea.Cmd {
+	if m.doc == nil || m.client == nil {
+		return nil
+	}
+	m.edit.reviewing = true
+	id := m.edit.requestID
+	body := m.doc.Body
+	kind := m.edit.kind
+	instructions := m.edit.instructions.Value()
+	client := m.client
+	overrides := m.cfg.MessageOverrides
+	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.Timeout)
+	m.edit.requestCancel = cancel
+	return tea.Batch(m.spin.Tick, func() tea.Msg {
+		approved, err := approveEditSuggestion(ctx, client, body, suggestion, kind, instructions, overrides)
+		return editApprovalMsg{id: id, approved: approved, err: err}
+	})
 }
 
 func (m *Model) acceptSuggestion() tea.Cmd {
@@ -1991,6 +2325,7 @@ func (m *Model) appendEditHistory(action string, suggestion editSuggestion) {
 	if len(m.edit.history) > 20 {
 		m.edit.history = m.edit.history[len(m.edit.history)-20:]
 	}
+	m.edit.historyIndex = len(m.edit.history) - 1
 }
 
 // --- State helpers ---
@@ -2001,7 +2336,7 @@ func (m *Model) setStatus(text, level string) {
 }
 
 func (m *Model) busy() bool {
-	return m.generating || m.edit.requesting
+	return m.generating || m.edit.requesting || m.edit.reviewing
 }
 
 func (m *Model) cancelBusyRequest() {
@@ -2010,6 +2345,10 @@ func (m *Model) cancelBusyRequest() {
 		return
 	}
 	if m.edit.requesting && m.edit.requestCancel != nil {
+		m.edit.requestCancel()
+		return
+	}
+	if m.edit.reviewing && m.edit.requestCancel != nil {
 		m.edit.requestCancel()
 	}
 }
@@ -2172,9 +2511,15 @@ func actionMessages(mode generationMode, sections []document.Section, prompt str
 	return messages, nil
 }
 
-func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, kind editKind, approval approvalMode, instructions string) editSuggestionResult {
+func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, kind editKind, instructions string) editSuggestionResult {
 	if strings.TrimSpace(body) == "" {
-		return editSuggestionResult{Note: "The document is empty. Add content before requesting copy edits."}
+		return editSuggestionResult{Note: "The document is empty. Add content before requesting edits."}
+	}
+	doneNote := "No further high-priority copy edits suggested."
+	suggestionNote := "Suggested one copy edit with a unique exact match"
+	if kind == editKindDirected {
+		doneNote = "The requested directed edit is complete."
+		suggestionNote = "Suggested one directed edit with a unique exact match"
 	}
 
 	feedback := ""
@@ -2194,7 +2539,7 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 			continue
 		}
 		if suggestion.empty() {
-			return editSuggestionResult{Note: "No further high-priority copy edits suggested."}
+			return editSuggestionResult{Note: doneNote}
 		}
 		if suggestion.OldText == suggestion.NewText {
 			feedback = "old_text and new_text must differ unless both are empty."
@@ -2217,27 +2562,10 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 			}
 		}
 
-		result := editSuggestionResult{
+		return editSuggestionResult{
 			Suggestion: &suggestion,
-			Note:       "Suggested one copy edit with a unique exact match",
+			Note:       suggestionNote,
 		}
-		if approval == approvalAll {
-			result.AutoAccept = true
-			return result
-		}
-		if approval == approvalAutomatic {
-			approved, approvalErr := approveEditSuggestion(ctx, client, body, suggestion, kind, instructions, overrides)
-			if approvalErr != nil {
-				return editSuggestionResult{Err: approvalErr}
-			}
-			result.AutoAccept = approved
-			if approved {
-				result.Note = "Safety check approved this edit automatically"
-			} else {
-				result.Note = "Safety check requires your review"
-			}
-		}
-		return result
 	}
 
 	return editSuggestionResult{Err: fmt.Errorf("could not obtain a unique edit suggestion")}
@@ -2248,9 +2576,13 @@ func buildEditMessages(body, fileSystemMessage string, history []editHistoryEntr
 }
 
 func buildEditMessagesWithOptions(body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, feedback string, kind editKind, instructions string) ([]llm.Message, error) {
-	systemPrompt, err := prompts.Render(prompts.EditPrompt, overrides, nil)
+	promptName := prompts.EditPrompt
+	if kind == editKindDirected {
+		promptName = prompts.DirectedEditPrompt
+	}
+	systemPrompt, err := prompts.Render(promptName, overrides, nil)
 	if err != nil {
-		return nil, fmt.Errorf("render %s: %w", prompts.EditPrompt, err)
+		return nil, fmt.Errorf("render %s: %w", promptName, err)
 	}
 	taskPrompt, err := prompts.Render(prompts.EditTaskPrompt, overrides, nil)
 	if err != nil {
@@ -2679,6 +3011,15 @@ func formatTimestamp(t time.Time) string {
 	return t.Format("3:04:05 PM")
 }
 
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func lineCount(value string) int {
 	if value == "" {
 		return 1
@@ -2737,6 +3078,8 @@ func (m workspaceMode) label() string {
 	switch m {
 	case workspaceEdit:
 		return "edit"
+	case workspaceDocument:
+		return "document"
 	default:
 		return "generate"
 	}
