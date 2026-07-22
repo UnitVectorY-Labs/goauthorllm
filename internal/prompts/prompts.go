@@ -29,12 +29,43 @@ const (
 
 // Override customizes an embedded prompt.
 type Override struct {
-	Replace string `yaml:"replace"`
-	Append  string `yaml:"append"`
+	Replace     string `yaml:"replace"`
+	Append      string `yaml:"append"`
+	ReplaceFile string `yaml:"replace_file"`
+	AppendFile  string `yaml:"append_file"`
 }
 
 // Overrides maps prompt names to their customizations.
 type Overrides map[Name]Override
+
+// Names returns every prompt name accepted by the application.
+func Names() []Name {
+	return []Name{
+		GeneratePrompt,
+		EditPrompt,
+		DirectedEditPrompt,
+		DirectedEditTaskPrompt,
+		SectionContextPrompt,
+		ContinuePrompt,
+		NewSectionPrompt,
+		UserGuidancePrompt,
+		EditTaskPrompt,
+		EditHistoryPrompt,
+		EditFeedbackPrompt,
+		EditApprovalPrompt,
+		EditRepairPrompt,
+	}
+}
+
+// Valid reports whether name identifies an embedded prompt.
+func Valid(name Name) bool {
+	for _, candidate := range Names() {
+		if name == candidate {
+			return true
+		}
+	}
+	return false
+}
 
 //go:embed assets/*.txt
 var assetFS embed.FS

@@ -6,7 +6,34 @@ nav_order: 5
 
 # Prompts
 
-goauthorllm ships with embedded prompt templates that control how the application communicates with the LLM. These prompts are compiled into the binary and can be customized through the [`.goauthorllm` configuration file](configuration).
+goauthorllm ships with embedded prompt templates that control how the application communicates with the LLM. These prompts are compiled into the binary and can be customized through [configuration](configuration), environment variables, or file flags.
+
+## Supplying Prompt Files
+
+In `.goauthorllm`, each prompt accepts inline `replace` / `append` text or file-backed `replace_file` / `append_file` values:
+
+```yaml
+generate_prompt:
+  replace_file: prompts/generate.txt
+continue_prompt:
+  append_file: prompts/continue-rules.txt
+```
+
+The equivalent repeatable flags use `NAME=PATH`:
+
+```bash
+goauthorllm --prompt-file generate_prompt=prompts/generate.txt \
+  --prompt-append-file continue_prompt=prompts/continue-rules.txt
+```
+
+For environment-only configuration, use `GOAUTHORLLM_<PROMPT_NAME>_FILE` to replace a prompt or `GOAUTHORLLM_<PROMPT_NAME>_APPEND_FILE` to append to it. For example:
+
+```bash
+export GOAUTHORLLM_GENERATE_PROMPT_FILE="$PWD/prompts/generate.txt"
+export GOAUTHORLLM_CONTINUE_PROMPT_APPEND_FILE="$PWD/prompts/continue-rules.txt"
+```
+
+Flags override environment-backed files, which override `.goauthorllm`. Template replacements must retain the template variables documented below when the application needs them. Generation guidance (`--guidance-file`) and directed-edit instructions (`--edit-instructions-file`) are per-operation inputs, not replacements for these application prompts.
 
 ## How Prompts Work
 

@@ -28,7 +28,7 @@ goauthorllm --file draft.md
 
 ## Flags, Environment Variables, and Local Config
 
-For `base_url` and `model`, precedence is:
+For configurable values, precedence is:
 
 1. Flag
 2. Environment variable
@@ -46,6 +46,60 @@ The `.goauthorllm` file is optional and provides project-local fallbacks for `ba
 | Editing model | `GOAUTHORLLM_EDITING_MODEL` | `--editing-model` | `editing_model` | value of `model` | Optional model used for copy and directed editing requests. |
 | API key | `GOAUTHORLLM_API_KEY`, `OPENAI_API_KEY` | `--api-key` | not supported | *(empty)* | Bearer token for the endpoint. |
 | Timeout | `GOAUTHORLLM_TIMEOUT` | `--timeout` | not supported | `90s` | Timeout for non-streaming LLM requests (such as edits), as a Go duration string. Streaming generation has no total timeout and can be stopped from the UI. |
+| Copy-edit batch size | `GOAUTHORLLM_COPY_EDIT_BATCH_SIZE` | `--copy-edit-batch-size` | `copy_edit_batch_size` | `1` | Maximum suggestions requested in each copy-edit batch. |
+| Directed-edit batch size | `GOAUTHORLLM_DIRECTED_EDIT_BATCH_SIZE` | `--directed-edit-batch-size` | `directed_edit_batch_size` | `10` | Maximum suggestions requested in each directed-edit batch. |
+| Mode | `GOAUTHORLLM_MODE` | `--mode` | `mode` | none | Non-interactive operation: `generate` or `edit`. |
+| Sub-mode | `GOAUTHORLLM_SUBMODE` | `--submode` | `submode` | none | Generation: `continue` or `new-section`; editing: `copy` or `directed`. |
+| Approval | `GOAUTHORLLM_APPROVAL` | `--approval` | `approval` | none | Non-interactive editing: `approve-all` or `llm-approved`. |
+| Maximum edits | `GOAUTHORLLM_MAX_EDITS` | `--max-edits` | `max_edits` | `0` | Maximum edits applied during one non-interactive run; `0` is unlimited. |
+| Generation guidance | `GOAUTHORLLM_GUIDANCE`, `GOAUTHORLLM_GUIDANCE_FILE` | `--guidance`, `--guidance-file` | `guidance`, `guidance_file` | empty | Optional instructions for one generation. |
+| Directed edit instructions | `GOAUTHORLLM_EDIT_INSTRUCTIONS`, `GOAUTHORLLM_EDIT_INSTRUCTIONS_FILE` | `--edit-instructions`, `--edit-instructions-file` | `edit_instructions`, `edit_instructions_file` | empty | Required for directed editing. |
+
+## Non-Interactive Mode
+
+Use `--non-interactive` for a single, fully scripted operation. This flag is deliberately required: without it, goauthorllm launches the TUI. The document must also be passed on the command line, either positionally or with `--file`.
+
+Generate a continuation:
+
+```bash
+goauthorllm --non-interactive --mode generate --submode continue draft.md
+```
+
+Start a new section using guidance from a file:
+
+```bash
+goauthorllm --non-interactive --mode generate --submode new-section \
+  --guidance-file next-section.txt draft.md
+```
+
+Apply every valid copy edit, stopping after five changes:
+
+```bash
+goauthorllm --non-interactive --mode edit --submode copy \
+  --approval approve-all --max-edits 5 draft.md
+```
+
+Run a directed edit with a second LLM approval pass:
+
+```bash
+goauthorllm --non-interactive --mode edit --submode directed \
+  --approval llm-approved --edit-instructions-file rewrite.txt draft.md
+```
+
+Generation writes the new content to the document and prints that generated addition to standard output. Editing saves each applied replacement and prints its old and new text in a simple `--- old` / `+++ new` format. Status and error messages go to standard error. There are no prompts or manual approval fallbacks in this mode: `llm-approved` skips suggestions rejected by the approval model, while `approve-all` applies every validated suggestion.
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Content was generated and saved, or at least one edit was applied and saved. |
+| `1` | The operation failed, such as an LLM, file, prompt, or output error. |
+| `2` | Command configuration or arguments were invalid. |
+| `3` | The operation completed normally but made no change. This includes empty generation output and an edit pass with no applied suggestions. |
+
+The `.goauthorllm` file remains optional in non-interactive mode. Endpoint, model, operation settings, guidance, instructions, batch sizes, edit limits, and prompt overrides can all come from flags or environment variables. See [Configuration](configuration) and [Prompts](prompts) for the complete mapping.
+
+Prompt templates use the repeatable `--prompt-file NAME=PATH` and `--prompt-append-file NAME=PATH` flags, or prompt-specific environment variables documented on the [Prompts](prompts) page.
 
 ## Screens
 

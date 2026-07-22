@@ -51,6 +51,47 @@ This works well for:
 - Fixing terminology in a technical guide
 - Catching grammar and style issues
 
+## Script Copy Editing Until Complete
+
+Exit code `3` means the editor completed a pass without applying an edit. Limiting each invocation to one edit makes that status useful as a loop condition:
+
+```bash
+#!/usr/bin/env bash
+
+while true; do
+  if goauthorllm --non-interactive --mode edit --submode copy \
+      --approval approve-all --max-edits 1 draft.md; then
+    continue
+  else
+    status=$?
+    if [ "$status" -eq 3 ]; then
+      echo "Copy editing complete" >&2
+      break
+    fi
+    exit "$status"
+  fi
+done
+```
+
+Each successful iteration prints and saves one old/new replacement. Configuration or runtime failures retain their distinct exit codes instead of being mistaken for completion.
+
+## Run Without a Config File
+
+Every connection and operation value can be supplied through flags or environment variables. Only `--non-interactive` and the document path must be explicit command-line arguments:
+
+```bash
+export GOAUTHORLLM_BASE_URL="https://api.openai.com/v1"
+export GOAUTHORLLM_MODEL="gpt-4o"
+export GOAUTHORLLM_API_KEY="sk-..."
+export GOAUTHORLLM_MODE="generate"
+export GOAUTHORLLM_SUBMODE="new-section"
+export GOAUTHORLLM_GUIDANCE_FILE="$PWD/prompts/next-section.txt"
+
+goauthorllm --non-interactive draft.md
+```
+
+For a directed edit, set `GOAUTHORLLM_MODE=edit`, `GOAUTHORLLM_SUBMODE=directed`, `GOAUTHORLLM_APPROVAL=llm-approved`, and provide `GOAUTHORLLM_EDIT_INSTRUCTIONS` or `GOAUTHORLLM_EDIT_INSTRUCTIONS_FILE`.
+
 ## Use with OpenAI
 
 Set your API key and point to the OpenAI endpoint:

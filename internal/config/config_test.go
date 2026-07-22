@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/prompts"
@@ -285,5 +286,97 @@ func TestLoadRejectsMultiplePositionalArgs(t *testing.T) {
 	_, err := Load([]string{"a.md", "b.md"})
 	if err == nil {
 		t.Fatal("expected error for multiple positional arguments")
+	}
+}
+
+func TestLoadValidatesNonInteractiveGeneration(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	cfg, err := Load([]string{"--non-interactive", "--mode", "generate", "--submode", "continue", "draft.md"})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.NonInteractive || cfg.FilePath != "draft.md" || cfg.Mode != "generate" || cfg.Submode != "continue" {
+		t.Fatalf("unexpected non-interactive config: %#v", cfg)
+	}
+}
+
+func TestLoadRejectsIncompleteNonInteractiveEdit(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	_, err := Load([]string{"--non-interactive", "--mode", "edit", "--submode", "copy", "draft.md"})
+	if err == nil || !strings.Contains(err.Error(), "--approval") {
+		t.Fatalf("expected missing approval error, got %v", err)
+	}
+	_, err = Load([]string{"--non-interactive", "--mode", "edit", "--submode", "directed", "--approval", "approve-all", "draft.md"})
+	if err == nil || !strings.Contains(err.Error(), "edit-instructions") {
+		t.Fatalf("expected missing instructions error, got %v", err)
+	}
+}
+
+func TestLoadReadsOperationalValuesFromEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	instructionsPath := filepath.Join(dir, "instructions.txt")
+	if err := os.WriteFile(instructionsPath, []byte("Rewrite the introduction."), 0o644); err != nil {
+		t.Fatalf("write instructions: %v", err)
+	}
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	t.Setenv("GOAUTHORLLM_MODE", "edit")
+	t.Setenv("GOAUTHORLLM_SUBMODE", "directed")
+	t.Setenv("GOAUTHORLLM_APPROVAL", "llm-approved")
+	t.Setenv("GOAUTHORLLM_EDIT_INSTRUCTIONS_FILE", instructionsPath)
+	t.Setenv("GOAUTHORLLM_MAX_EDITS", "4")
+
+	cfg, err := Load([]string{"--non-interactive", "draft.md"})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.EditInstructions != "Rewrite the introduction." || cfg.MaxEdits != 4 {
+		t.Fatalf("unexpected environment-backed config: %#v", cfg)
+	}
+}
+
+func TestLoadReadsPromptOverrideFiles(t *testing.T) {
+	dir := t.TempDir()
+	replacePath := filepath.Join(dir, "generate.txt")
+	appendPath := filepath.Join(dir, "continue.txt")
+	envPath := filepath.Join(dir, "edit.txt")
+	if err := os.WriteFile(replacePath, []byte("Replacement system prompt."), 0o644); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+	if err := os.WriteFile(appendPath, []byte("Additional continuation rule."), 0o644); err != nil {
+		t.Fatalf("write append: %v", err)
+	}
+	if err := os.WriteFile(envPath, []byte("Environment edit prompt."), 0o644); err != nil {
+		t.Fatalf("write environment prompt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".goauthorllm"), []byte("generate_prompt:\n  replace_file: generate.txt\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	t.Setenv("GOAUTHORLLM_EDIT_PROMPT_FILE", envPath)
+
+	cfg, err := Load([]string{"--prompt-append-file", "continue_prompt=" + appendPath})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.MessageOverrides[prompts.GeneratePrompt].Replace != "Replacement system prompt." {
+		t.Fatalf("unexpected replacement: %#v", cfg.MessageOverrides[prompts.GeneratePrompt])
+	}
+	if cfg.MessageOverrides[prompts.ContinuePrompt].Append != "Additional continuation rule." {
+		t.Fatalf("unexpected append: %#v", cfg.MessageOverrides[prompts.ContinuePrompt])
+	}
+	if cfg.MessageOverrides[prompts.EditPrompt].Replace != "Environment edit prompt." {
+		t.Fatalf("unexpected environment replacement: %#v", cfg.MessageOverrides[prompts.EditPrompt])
 	}
 }
