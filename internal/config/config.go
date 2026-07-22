@@ -84,7 +84,7 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&copyEditBatchSizeFlag, "copy-edit-batch-size", DefaultCopyEditBatchSize, "maximum copy-edit suggestions per batch")
 	fs.IntVar(&directedEditBatchSizeFlag, "directed-edit-batch-size", DefaultDirectedEditBatchSize, "maximum directed-edit suggestions per batch")
 	fs.StringVar(&cfg.APIKey, "api-key", firstNonEmpty(os.Getenv("GOAUTHORLLM_API_KEY"), os.Getenv("OPENAI_API_KEY")), "API key for the LLM endpoint")
-	fs.DurationVar(&cfg.Timeout, "timeout", timeoutDefault, "request timeout")
+	fs.DurationVar(&cfg.Timeout, "timeout", timeoutDefault, "non-streaming LLM request timeout")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err

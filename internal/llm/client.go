@@ -14,10 +14,11 @@ import (
 
 // Client communicates with an OpenAI-compatible chat completions endpoint.
 type Client struct {
-	baseURL    string
-	model      string
-	apiKey     string
-	httpClient *http.Client
+	baseURL           string
+	model             string
+	apiKey            string
+	requestHTTPClient *http.Client
+	streamHTTPClient  *http.Client
 }
 
 // Message represents a chat message.
@@ -82,9 +83,13 @@ func NewClient(baseURL, model, apiKey string, timeout time.Duration) *Client {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   model,
 		apiKey:  apiKey,
-		httpClient: &http.Client{
+		requestHTTPClient: &http.Client{
 			Timeout: timeout,
 		},
+		// A streaming generation must not be cut off simply because it has
+		// been producing content for longer than the non-streaming timeout.
+		// Its caller can still cancel it through the request context.
+		streamHTTPClient: &http.Client{},
 	}
 }
 
@@ -100,7 +105,7 @@ func (c *Client) StreamChat(ctx context.Context, messages []Message, send func(S
 		return err
 	}
 
-	resp, err := c.doChatCompletion(ctx, payload, "text/event-stream, application/json")
+	resp, err := c.doChatCompletion(c.streamHTTPClient, ctx, payload, "text/event-stream, application/json")
 	if err != nil {
 		return err
 	}
@@ -146,7 +151,7 @@ func (c *Client) StructuredChat(ctx context.Context, messages []Message, schemaN
 		return "", err
 	}
 
-	resp, err := c.doChatCompletion(ctx, payload, "application/json")
+	resp, err := c.doChatCompletion(c.requestHTTPClient, ctx, payload, "application/json")
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +168,7 @@ func (c *Client) StructuredChat(ctx context.Context, messages []Message, schemaN
 	return c.consumeStructuredResponse(resp.Body)
 }
 
-func (c *Client) doChatCompletion(ctx context.Context, payload []byte, accept string) (*http.Response, error) {
+func (c *Client) doChatCompletion(httpClient *http.Client, ctx context.Context, payload []byte, accept string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -175,7 +180,7 @@ func (c *Client) doChatCompletion(ctx context.Context, payload []byte, accept st
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
-	return c.httpClient.Do(req)
+	return httpClient.Do(req)
 }
 
 func (c *Client) consumeNonStreamingResponse(body io.Reader, send func(StreamEvent) error) error {

@@ -45,7 +45,7 @@ The `.goauthorllm` file is optional and provides project-local fallbacks for `ba
 | Generation model | `GOAUTHORLLM_GENERATION_MODEL` | `--generation-model` | `generation_model` | value of `model` | Optional model used only for generation requests. |
 | Editing model | `GOAUTHORLLM_EDITING_MODEL` | `--editing-model` | `editing_model` | value of `model` | Optional model used for copy and directed editing requests. |
 | API key | `GOAUTHORLLM_API_KEY`, `OPENAI_API_KEY` | `--api-key` | not supported | *(empty)* | Bearer token for the endpoint. |
-| Timeout | `GOAUTHORLLM_TIMEOUT` | `--timeout` | not supported | `90s` | Request timeout as a Go duration string. |
+| Timeout | `GOAUTHORLLM_TIMEOUT` | `--timeout` | not supported | `90s` | Timeout for non-streaming LLM requests (such as edits), as a Go duration string. Streaming generation has no total timeout and can be stopped from the UI. |
 
 ## Screens
 

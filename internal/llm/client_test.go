@@ -133,6 +133,27 @@ func TestStreamChatHandlesSSEStream(t *testing.T) {
 	}
 }
 
+func TestStreamChatIsNotLimitedByNonStreamingTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-model", "", 10*time.Millisecond)
+	err := client.StreamChat(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(event StreamEvent) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream chat should not inherit the non-streaming timeout: %v", err)
+	}
+}
+
 func TestStreamChatHandlesNonStreamingFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

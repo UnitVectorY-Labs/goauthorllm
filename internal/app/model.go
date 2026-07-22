@@ -2276,10 +2276,12 @@ func (m *Model) startGeneration(mode generationMode) tea.Cmd {
 	m.syncFocus()
 
 	id := m.generationID
-	timeout := m.cfg.Timeout
 	client := m.generationClient
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Do not impose a total deadline on a response that is actively
+	// streaming. Long-form generations commonly exceed the edit-request
+	// timeout; the user can still stop this request at any time.
+	ctx, cancel := context.WithCancel(context.Background())
 	m.generationCancel = cancel
 	events := make(chan llm.StreamEvent, 32)
 	go func() {
