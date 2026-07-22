@@ -6,7 +6,7 @@ nav_order: 4
 
 # Configuration
 
-goauthorllm reads an optional `.goauthorllm` file from the directory where the application is started. This YAML file can provide project-local defaults for `base_url`, `model`, `generation_model`, and `editing_model`, and it can customize the embedded prompt messages without modifying Go source or rebuilding the binary.
+goauthorllm reads an optional `.goauthorllm` file from the directory where the application is started. This YAML file can provide project-local defaults for connection settings and edit batch sizes, and it can customize the embedded prompt messages without modifying Go source or rebuilding the binary.
 
 ## Precedence
 
@@ -18,6 +18,8 @@ For `base_url` and `model`, goauthorllm resolves values in this order:
 4. The built-in default
 
 The `.goauthorllm` file is optional. If it is absent, or if either key is omitted, goauthorllm falls back to the higher-priority sources and then to the built-in defaults.
+
+Edit batch sizes follow the same precedence: `--copy-edit-batch-size` / `--directed-edit-batch-size`, then `GOAUTHORLLM_COPY_EDIT_BATCH_SIZE` / `GOAUTHORLLM_DIRECTED_EDIT_BATCH_SIZE`, then the `.goauthorllm` values, then their defaults. Both must be positive integers.
 
 ## When to Use It
 
@@ -40,6 +42,8 @@ The file supports these optional top-level keys:
 | `model` | string | Project-local default model name |
 | `generation_model` | string | Optional model for generation; falls back to `model` |
 | `editing_model` | string | Optional model for copy and directed editing; falls back to `model` |
+| `copy_edit_batch_size` | integer | Maximum copy-edit suggestions per batch; default `1` |
+| `directed_edit_batch_size` | integer | Maximum directed-edit suggestions per batch; default `10` |
 | prompt name | map | Prompt override for one embedded prompt |
 
 Prompt override keys support two optional fields:
@@ -49,6 +53,8 @@ base_url: http://localhost:11434/v1
 model: gemma3:4b
 generation_model: optional-generation-model
 editing_model: optional-editing-model
+copy_edit_batch_size: 1
+directed_edit_batch_size: 10
 generate_prompt:
   append: |
     Keep the writing concise and avoid filler.

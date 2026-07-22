@@ -1,8 +1,9 @@
-Review the next content message, which contains the full current document body, and return exactly one high-priority fix.
+Review the next content message, which contains the full current document body, and return high-priority fixes.
 Requirements:
 - old_text must be copied character-for-character from the content message.
 - old_text must match exactly one location in the content message.
 - new_text must be the corrected replacement for that exact excerpt.
 - Prefer the smallest replacement that fully resolves the issue.
-- remaining_rounds is your conservative estimate of how many further suggestion rounds will be useful after this one. Return 0 when this is the final useful suggestion or when no fixes remain.
-- If no important fixes remain, return empty strings for both text fields and 0 for remaining_rounds.
+- Suggestions must not overlap one another.
+- remaining_rounds is your conservative estimate of how many further suggestion batches will be useful after this one. Return 0 when this is the final useful batch or when no fixes remain.
+- If no important fixes remain, return an empty suggestions array and 0 for remaining_rounds.

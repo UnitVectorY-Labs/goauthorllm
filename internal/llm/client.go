@@ -313,6 +313,9 @@ func extractContent(value any) string {
 			}
 		}
 		return strings.Join(parts, "")
+	case map[string]any:
+		text, _ := typed["text"].(string)
+		return text
 	default:
 		return ""
 	}

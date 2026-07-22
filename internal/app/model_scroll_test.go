@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -300,6 +301,19 @@ func TestAcceptSuggestionReplacesUniqueMatch(t *testing.T) {
 	}
 	if len(model.edit.history) != 1 || model.edit.history[0].Action != "accepted" {
 		t.Fatalf("expected accepted suggestion history, got %#v", model.edit.history)
+	}
+}
+
+func TestEditHistoryRetainsEverySessionEntry(t *testing.T) {
+	model := Model{}
+	for i := range 25 {
+		model.appendEditHistory("accepted", editSuggestion{OldText: fmt.Sprintf("old-%d", i), NewText: fmt.Sprintf("new-%d", i)})
+	}
+	if len(model.edit.history) != 25 {
+		t.Fatalf("expected complete history, got %d entries", len(model.edit.history))
+	}
+	if model.edit.history[0].OldText != "old-0" || model.edit.historyIndex != 24 {
+		t.Fatalf("unexpected retained history: %#v", model.edit)
 	}
 }
 

@@ -92,6 +92,22 @@ func TestStructuredChatRejectsEmptySchemaName(t *testing.T) {
 	}
 }
 
+func TestStructuredChatAcceptsObjectContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":{"type":"text","text":"{\"ok\":true}"}}}]}`)
+	}))
+	defer server.Close()
+
+	content, err := NewClient(server.URL, "test-model", "", time.Second).StructuredChat(context.Background(), nil, "test", map[string]any{"type": "object"})
+	if err != nil {
+		t.Fatalf("structured chat failed: %v", err)
+	}
+	if content != `{"ok":true}` {
+		t.Fatalf("unexpected content: %q", content)
+	}
+}
+
 func TestStreamChatHandlesSSEStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

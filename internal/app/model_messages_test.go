@@ -115,7 +115,7 @@ func TestBuildDirectedEditMessagesIncludesCustomInstructionsSeparately(t *testin
 	}
 	foundDirectedTask := false
 	for _, message := range messages {
-		if message.Name == "task_instructions" && strings.Contains(message.Content, "up to 10 suggestions") && strings.Contains(message.Content, "Do not include unrelated copy edits") {
+		if message.Name == "task_instructions" && strings.Contains(message.Content, "at most 10 suggestions") && strings.Contains(message.Content, "Do not include unrelated copy edits") {
 			foundDirectedTask = true
 		}
 	}

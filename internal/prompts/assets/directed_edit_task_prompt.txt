@@ -1,6 +1,6 @@
 Carry out the author's directed editing instructions on the full document in the next content message.
 
-Return as many replacements as are needed to complete the requested task across different parts of the document, up to 10 suggestions in this response.
+Return as many replacements as are needed to complete the requested task across different parts of the document, subject to the batch-size instruction.
 
 Requirements for every suggestion:
 - old_text must be copied character-for-character from the document.

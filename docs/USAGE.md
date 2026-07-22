@@ -80,8 +80,8 @@ The mode, editor, and approval screens use standard list navigation: move with `
 
 - **Copy Editor** uses the built-in copy-editing prompt
 - **Custom Editor** accepts your directed-edit instructions, such as rewriting or removing a specified section
-- Copy editing returns one structured `old_text`/`new_text` suggestion at a time.
-- Directed editing returns a structured batch of up to 10 `old_text`/`new_text` suggestions so one task can change multiple document sections.
+- Copy editing returns a structured batch of `old_text`/`new_text` suggestions (one by default; configure `copy_edit_batch_size` to change it).
+- Directed editing returns a structured batch of up to 10 `old_text`/`new_text` suggestions by default; configure `directed_edit_batch_size` to change it.
 - The application validates that `old_text` matches exactly one location
 - If a suggestion is ambiguous or stale, a separate repair request asks the model to produce a uniquely matching replacement
 - **Accept** applies the replacement, saves, and requests the next suggestion

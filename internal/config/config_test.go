@@ -104,6 +104,37 @@ func TestLoadUsesSpecificGenerationAndEditingModels(t *testing.T) {
 	}
 }
 
+func TestLoadReadsEditBatchSizes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".goauthorllm"), []byte("copy_edit_batch_size: 3\ndirected_edit_batch_size: 25\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.CopyEditBatchSize != 3 || cfg.DirectedEditBatchSize != 25 {
+		t.Fatalf("unexpected batch sizes: copy=%d directed=%d", cfg.CopyEditBatchSize, cfg.DirectedEditBatchSize)
+	}
+}
+
+func TestLoadRejectsNonPositiveEditBatchSize(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".goauthorllm"), []byte("copy_edit_batch_size: 0\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	oldwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if _, err := Load(nil); err == nil {
+		t.Fatal("expected non-positive batch size to be rejected")
+	}
+}
+
 func TestLoadSpecializedModelsFallBackToDefaultModel(t *testing.T) {
 	dir := t.TempDir()
 	oldwd, _ := os.Getwd()

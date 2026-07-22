@@ -2340,6 +2340,10 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 	systemMessage := m.doc.SystemMessage
 	history := append([]editHistoryEntry(nil), m.edit.history...)
 	kind := m.edit.kind
+	batchSize := m.cfg.CopyEditBatchSize
+	if kind == editKindDirected {
+		batchSize = m.cfg.DirectedEditBatchSize
+	}
 	instructions := m.edit.instructions.Value()
 	client := m.editingClient
 	overrides := m.cfg.MessageOverrides
@@ -2348,7 +2352,7 @@ func (m *Model) requestEditSuggestion(status string) tea.Cmd {
 	m.edit.requestCancel = cancel
 	events := make(chan editSuggestionResult, 1)
 	go func() {
-		events <- fetchEditSuggestion(ctx, client, body, systemMessage, history, overrides, kind, instructions)
+		events <- fetchEditSuggestion(ctx, client, body, systemMessage, history, overrides, kind, instructions, batchSize)
 		close(events)
 	}()
 	return tea.Batch(m.spin.Tick, waitForEditSuggestion(events, id))
@@ -2410,9 +2414,6 @@ func (m *Model) appendEditHistory(action string, suggestion editSuggestion) {
 		OldText: suggestion.OldText,
 		NewText: suggestion.NewText,
 	})
-	if len(m.edit.history) > 20 {
-		m.edit.history = m.edit.history[len(m.edit.history)-20:]
-	}
 	m.edit.historyIndex = len(m.edit.history) - 1
 }
 
@@ -2599,58 +2600,50 @@ func actionMessages(mode generationMode, sections []document.Section, prompt str
 	return messages, nil
 }
 
-func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, kind editKind, instructions string) editSuggestionResult {
+func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, kind editKind, instructions string, batchSize int) editSuggestionResult {
 	if strings.TrimSpace(body) == "" {
 		return editSuggestionResult{Note: "The document is empty. Add content before requesting edits."}
 	}
+	if batchSize <= 0 {
+		return editSuggestionResult{Err: fmt.Errorf("edit batch size must be greater than zero")}
+	}
 	if kind == editKindDirected {
-		return fetchDirectedEditSuggestions(ctx, client, body, fileSystemMessage, history, overrides, instructions)
+		return fetchDirectedEditSuggestions(ctx, client, body, fileSystemMessage, history, overrides, instructions, batchSize)
 	}
 
 	feedback := ""
 	for range 3 {
-		messages, err := buildEditMessagesWithOptions(body, fileSystemMessage, history, overrides, feedback, kind, instructions)
+		messages, err := buildEditMessagesWithBatchSize(body, fileSystemMessage, history, overrides, feedback, kind, instructions, batchSize)
 		if err != nil {
 			return editSuggestionResult{Err: err}
 		}
-		raw, err := client.StructuredChat(ctx, messages, "copy_edit_suggestion", editSuggestionSchema)
+		raw, err := client.StructuredChat(ctx, messages, "copy_edit_suggestions", editBatchSchema(batchSize))
 		if err != nil {
 			return editSuggestionResult{Err: err}
 		}
 
-		var suggestion editSuggestion
-		if err := json.Unmarshal([]byte(raw), &suggestion); err != nil {
+		var batch directedEditBatch
+		if err := json.Unmarshal([]byte(normalizeStructuredJSON(raw)), &batch); err != nil {
 			feedback = "The previous response was not valid JSON for the requested schema. Return only the structured object."
 			continue
 		}
-		if suggestion.empty() {
+		if len(batch.Suggestions) == 0 {
 			return editSuggestionResult{Note: "No further high-priority copy edits suggested."}
 		}
-		if suggestion.OldText == suggestion.NewText {
-			feedback = "old_text and new_text must differ unless both are empty."
+		validated, validationFeedback, validationErr := validateDirectedSuggestions(ctx, client, body, batch.Suggestions, overrides)
+		if validationErr != nil {
+			feedback = "The previous suggestions could not be repaired. Return exact, uniquely matching replacements."
+			continue
+		}
+		if validationFeedback != "" {
+			feedback = validationFeedback
 			continue
 		}
 
-		matchCount := document.MatchCount(body, suggestion.OldText)
-		if matchCount != 1 {
-			repaired, repairErr := repairEditSuggestion(ctx, client, body, suggestion, overrides)
-			if repairErr != nil {
-				return editSuggestionResult{Err: repairErr}
-			}
-			suggestion = repaired
-			if suggestion.empty() {
-				return editSuggestionResult{Note: "Could not safely repair an ambiguous edit suggestion."}
-			}
-			if document.MatchCount(body, suggestion.OldText) != 1 {
-				feedback = fmt.Sprintf("The repaired old_text matched %d locations. Return a unique exact excerpt.", document.MatchCount(body, suggestion.OldText))
-				continue
-			}
-		}
-
 		return editSuggestionResult{
-			Suggestions:     []editSuggestion{suggestion},
-			RemainingRounds: suggestion.RemainingRounds,
-			Note:            "Suggested one copy edit with a unique exact match",
+			Suggestions:     validated,
+			RemainingRounds: batch.RemainingRounds,
+			Note:            fmt.Sprintf("Suggested %d copy edits", len(validated)),
 		}
 	}
 
@@ -2662,19 +2655,19 @@ type directedEditBatch struct {
 	RemainingRounds int              `json:"remaining_rounds"`
 }
 
-func fetchDirectedEditSuggestions(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, instructions string) editSuggestionResult {
+func fetchDirectedEditSuggestions(ctx context.Context, client *llm.Client, body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, instructions string, batchSize int) editSuggestionResult {
 	feedback := ""
 	for range 3 {
-		messages, err := buildEditMessagesWithOptions(body, fileSystemMessage, history, overrides, feedback, editKindDirected, instructions)
+		messages, err := buildEditMessagesWithBatchSize(body, fileSystemMessage, history, overrides, feedback, editKindDirected, instructions, batchSize)
 		if err != nil {
 			return editSuggestionResult{Err: err}
 		}
-		raw, err := client.StructuredChat(ctx, messages, "directed_edit_suggestions", directedEditBatchSchema)
+		raw, err := client.StructuredChat(ctx, messages, "directed_edit_suggestions", editBatchSchema(batchSize))
 		if err != nil {
 			return editSuggestionResult{Err: err}
 		}
 		var batch directedEditBatch
-		if err := json.Unmarshal([]byte(raw), &batch); err != nil {
+		if err := json.Unmarshal([]byte(normalizeStructuredJSON(raw)), &batch); err != nil {
 			feedback = "The previous response was not valid JSON for the directed editing schema. Return only the structured object."
 			continue
 		}
@@ -2684,7 +2677,8 @@ func fetchDirectedEditSuggestions(ctx context.Context, client *llm.Client, body,
 
 		validated, validationFeedback, validationErr := validateDirectedSuggestions(ctx, client, body, batch.Suggestions, overrides)
 		if validationErr != nil {
-			return editSuggestionResult{Err: validationErr}
+			feedback = "The previous suggestions could not be repaired. Return exact, uniquely matching replacements."
+			continue
 		}
 		if validationFeedback != "" {
 			feedback = validationFeedback
@@ -2735,6 +2729,17 @@ func buildEditMessages(body, fileSystemMessage string, history []editHistoryEntr
 }
 
 func buildEditMessagesWithOptions(body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, feedback string, kind editKind, instructions string) ([]llm.Message, error) {
+	batchSize := config.DefaultCopyEditBatchSize
+	if kind == editKindDirected {
+		batchSize = config.DefaultDirectedEditBatchSize
+	}
+	return buildEditMessagesWithBatchSize(body, fileSystemMessage, history, overrides, feedback, kind, instructions, batchSize)
+}
+
+func buildEditMessagesWithBatchSize(body, fileSystemMessage string, history []editHistoryEntry, overrides prompts.Overrides, feedback string, kind editKind, instructions string, batchSize int) ([]llm.Message, error) {
+	if batchSize <= 0 {
+		return nil, fmt.Errorf("edit batch size must be greater than zero")
+	}
 	promptName := prompts.EditPrompt
 	if kind == editKindDirected {
 		promptName = prompts.DirectedEditPrompt
@@ -2751,6 +2756,7 @@ func buildEditMessagesWithOptions(body, fileSystemMessage string, history []edit
 	if err != nil {
 		return nil, fmt.Errorf("render %s: %w", taskName, err)
 	}
+	taskPrompt = strings.TrimSpace(taskPrompt) + fmt.Sprintf("\n\nReturn at most %d suggestions in this batch.", batchSize)
 	messages := []llm.Message{
 		systemPromptMessage(systemPrompt),
 		taskInstructionsMessage(taskPrompt),
@@ -2879,13 +2885,14 @@ var editSuggestionSchema = json.RawMessage(`{
   "required": ["old_text", "new_text", "remaining_rounds"]
 }`)
 
-var directedEditBatchSchema = json.RawMessage(`{
+func editBatchSchema(maxItems int) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "suggestions": {
       "type": "array",
-      "maxItems": 10,
+      "maxItems": %d,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -2899,7 +2906,19 @@ var directedEditBatchSchema = json.RawMessage(`{
     "remaining_rounds": {"type": "integer", "minimum": 0}
   },
   "required": ["suggestions", "remaining_rounds"]
-}`)
+}`, maxItems))
+}
+
+func normalizeStructuredJSON(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+	trimmed = strings.TrimPrefix(trimmed, "```json")
+	trimmed = strings.TrimPrefix(trimmed, "```")
+	trimmed = strings.TrimSuffix(strings.TrimSpace(trimmed), "```")
+	return strings.TrimSpace(trimmed)
+}
 
 var editApprovalSchema = json.RawMessage(`{
   "type": "object",
@@ -3218,9 +3237,9 @@ func promptHelpText() string {
 
 func editHelpText(kind editKind) string {
 	if kind == editKindDirected {
-		return "Directed editing can return up to 10 exact replacements per batch. Manual review shows each change in turn; automatic modes continue safely and History keeps every result."
+		return "Directed editing returns up to the configured number of exact replacements per batch (10 by default). Manual review shows each change in turn; automatic modes continue safely and History keeps every result."
 	}
-	return "Copy editing requests one exact replacement at a time. Accept applies it. Skip asks for the next suggestion. Automatic modes continue safely and History shows this session's edits."
+	return "Copy editing returns up to the configured number of exact replacements per batch (one by default). Accept applies each change. Skip asks for the next suggestion. Automatic modes continue safely and History shows this session's edits."
 }
 
 func wrappedLineCount(value string, width int) int {
