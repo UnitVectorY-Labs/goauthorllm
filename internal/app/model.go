@@ -447,6 +447,11 @@ func newTextarea(placeholder string, lineNumbers bool) ta.Model {
 	input.Placeholder = placeholder
 	input.ShowLineNumbers = lineNumbers
 	input.CharLimit = 0
+	// bubbles uses MaxHeight as both a rendering-height cap and a maximum
+	// number of lines. Its default is 99, which prevents manual line insertion
+	// in longer documents. The editor's visible height is controlled by resize,
+	// so leave the document length unrestricted here.
+	input.MaxHeight = 0
 	input.Prompt = ""
 	input.FocusedStyle.Base = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB"))
 	input.BlurredStyle.Base = lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1"))

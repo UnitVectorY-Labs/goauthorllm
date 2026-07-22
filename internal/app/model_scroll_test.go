@@ -120,6 +120,38 @@ func TestEnterAddsNewlineInEditor(t *testing.T) {
 	}
 }
 
+func TestEditorAllowsNewlinesBeyondTwoHundredLines(t *testing.T) {
+	model, err := NewModel(config.Config{
+		BaseURL: "http://example.com",
+		Model:   "test-model",
+		Timeout: 1,
+	}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+
+	model.width = 100
+	model.height = 40
+	model.screen = screenWorkspace
+	model.focus = focusEditor
+	model.resize()
+	model.syncFocus()
+	lines := make([]string, 200)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i+1)
+	}
+	model.doc = &document.Document{Path: "test.md", Body: strings.Join(lines, "\n"), LastSavedAt: time.Now()}
+	model.editor.SetValue(model.doc.Body)
+	model.editor.Focus()
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
+	updated, _ = updated.(*Model).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(*Model).editor.Value()
+	if want := strings.Join(lines, "\n") + "\n"; got != want {
+		t.Fatalf("expected newline to be inserted after 200 lines, got %q", got)
+	}
+}
+
 func TestNormalizeGenerationStartContinueAddsMissingSpace(t *testing.T) {
 	got := normalizeGenerationStart("The hero said", "nothing more.", modeContinue)
 	if got != " nothing more." {
