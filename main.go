@@ -57,6 +57,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "config error: %v\n", err)
 		return exitUsage
 	}
+	cfg.UserAgent = "goauthorllm/" + Version
 
 	if cfg.NonInteractive {
 		result, err := app.RunNonInteractive(cfg, stdout)
@@ -71,7 +72,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitSuccess
 	}
 
-	client := llm.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey, cfg.Timeout)
+	client := llm.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey, cfg.Timeout, cfg.UserAgent)
 	model, err := app.NewModel(cfg, client)
 	if err != nil {
 		fmt.Fprintf(stderr, "startup error: %v\n", err)

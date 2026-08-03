@@ -17,9 +17,12 @@ type Client struct {
 	baseURL           string
 	model             string
 	apiKey            string
+	userAgent         string
 	requestHTTPClient *http.Client
 	streamHTTPClient  *http.Client
 }
+
+const defaultUserAgent = "goauthorllm/dev"
 
 // Message represents a chat message.
 type Message struct {
@@ -77,12 +80,19 @@ type streamResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// NewClient creates a client for the given endpoint.
-func NewClient(baseURL, model, apiKey string, timeout time.Duration) *Client {
+// NewClient creates a client for the given endpoint. userAgent, when supplied,
+// is sent with every request; otherwise it defaults to goauthorllm/dev.
+func NewClient(baseURL, model, apiKey string, timeout time.Duration, userAgent ...string) *Client {
+	requestUserAgent := defaultUserAgent
+	if len(userAgent) > 0 && strings.TrimSpace(userAgent[0]) != "" {
+		requestUserAgent = userAgent[0]
+	}
+
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   model,
-		apiKey:  apiKey,
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		model:     model,
+		apiKey:    apiKey,
+		userAgent: requestUserAgent,
 		requestHTTPClient: &http.Client{
 			Timeout: timeout,
 		},
@@ -176,6 +186,7 @@ func (c *Client) doChatCompletion(httpClient *http.Client, ctx context.Context, 
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", accept)
+	req.Header.Set("User-Agent", c.userAgent)
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
