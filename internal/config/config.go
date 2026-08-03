@@ -41,6 +41,7 @@ type Config struct {
 	EditingModel          string
 	APIKey                string
 	Timeout               time.Duration
+	UserAgent             string
 	CopyEditBatchSize     int
 	DirectedEditBatchSize int
 	MessageOverrides      prompts.Overrides

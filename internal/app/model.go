@@ -363,10 +363,10 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 		hover:       focusTarget(-1),
 	}
 	if cfg.GenerationModel != "" && cfg.GenerationModel != cfg.Model {
-		m.generationClient = llm.NewClient(cfg.BaseURL, cfg.GenerationModel, cfg.APIKey, cfg.Timeout)
+		m.generationClient = llm.NewClient(cfg.BaseURL, cfg.GenerationModel, cfg.APIKey, cfg.Timeout, cfg.UserAgent)
 	}
 	if cfg.EditingModel != "" && cfg.EditingModel != cfg.Model {
-		m.editingClient = llm.NewClient(cfg.BaseURL, cfg.EditingModel, cfg.APIKey, cfg.Timeout)
+		m.editingClient = llm.NewClient(cfg.BaseURL, cfg.EditingModel, cfg.APIKey, cfg.Timeout, cfg.UserAgent)
 	}
 
 	m.frontMatter = newTextarea("File metadata and document-specific instructions...", false)

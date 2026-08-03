@@ -36,6 +36,9 @@ func TestStructuredChatSendsJsonSchemaAndReturnsContent(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Fatalf("unexpected authorization header: %q", got)
 		}
+		if got := r.Header.Get("User-Agent"); got != "goauthorllm/1.2.3" {
+			t.Fatalf("unexpected user agent header: %q", got)
+		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -50,7 +53,7 @@ func TestStructuredChatSendsJsonSchemaAndReturnsContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-model", "test-key", time.Second)
+	client := NewClient(server.URL, "test-model", "test-key", time.Second, "goauthorllm/1.2.3")
 	content, err := client.StructuredChat(context.Background(), []Message{{Role: "user", Name: "instructions", Content: "fix this"}}, "edit_suggestion", map[string]any{
 		"type": "object",
 		"properties": map[string]any{

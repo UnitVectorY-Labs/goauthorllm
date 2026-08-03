@@ -25,7 +25,7 @@ func RunNonInteractive(cfg config.Config, output io.Writer) (NonInteractiveResul
 	if strings.TrimSpace(clientModel) == "" {
 		clientModel = cfg.Model
 	}
-	client := llm.NewClient(cfg.BaseURL, clientModel, cfg.APIKey, cfg.Timeout)
+	client := llm.NewClient(cfg.BaseURL, clientModel, cfg.APIKey, cfg.Timeout, cfg.UserAgent)
 
 	doc, err := document.Load(cfg.FilePath)
 	if err != nil {
