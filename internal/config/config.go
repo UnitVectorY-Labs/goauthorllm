@@ -25,6 +25,12 @@ const (
 	DefaultDirectedEditBatchSize = 10
 )
 
+// DirectedEditPrompt defines a pre-made prompt for the directed editor.
+type DirectedEditPrompt struct {
+	Name    string `yaml:"name"`
+	Content string `yaml:"content"`
+}
+
 // Config holds all runtime settings.
 type Config struct {
 	FilePath              string
@@ -45,6 +51,7 @@ type Config struct {
 	CopyEditBatchSize     int
 	DirectedEditBatchSize int
 	MessageOverrides      prompts.Overrides
+	DirectedEditPrompts   []DirectedEditPrompt
 }
 
 type localConfigFile struct {
@@ -63,6 +70,7 @@ type localConfigFile struct {
 	CopyEditBatchSize     *int                        `yaml:"copy_edit_batch_size"`
 	DirectedEditBatchSize *int                        `yaml:"directed_edit_batch_size"`
 	MessageOverrides      map[string]prompts.Override `yaml:",inline"`
+	DirectedEditPrompts   []DirectedEditPrompt        `yaml:"directed_edit_prompts"`
 }
 
 type stringListFlag []string
@@ -212,6 +220,7 @@ func Load(args []string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	cfg.DirectedEditPrompts = normalizeDirectedEditPrompts(localCfg.DirectedEditPrompts)
 	if cfg.NonInteractive {
 		fileProvidedOnCommandLine := providedFlags["file"] || fs.NArg() == 1
 		if err := validateNonInteractive(cfg, fileProvidedOnCommandLine); err != nil {
@@ -259,6 +268,23 @@ func normalizeMessageOverrides(raw map[string]prompts.Override) prompts.Override
 		}
 	}
 	return overrides
+}
+
+func normalizeDirectedEditPrompts(raw []DirectedEditPrompt) []DirectedEditPrompt {
+	var normalized []DirectedEditPrompt
+	seen := make(map[string]bool)
+	for _, p := range raw {
+		name := strings.TrimSpace(p.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		normalized = append(normalized, DirectedEditPrompt{
+			Name:    name,
+			Content: strings.TrimSpace(p.Content),
+		})
+	}
+	return normalized
 }
 
 func resolveMessageOverrides(raw map[string]prompts.Override, replaceFiles, appendFiles []string) (prompts.Overrides, error) {
