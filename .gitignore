@@ -128,6 +128,3 @@ go.work
 ## Universal Ignore Patterns
 
 *.log
-
-# Local end-to-end fixtures and API response captures
-/manual_test/
