@@ -210,6 +210,46 @@ func TestViewIsClampedToWindowHeight(t *testing.T) {
 	}
 }
 
+func TestChooserUsesViewportForLongDocumentLists(t *testing.T) {
+	model, err := NewModel(config.Config{
+		BaseURL: "http://example.com",
+		Model:   "test-model",
+		Timeout: 1,
+	}, nil)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+
+	model.width = 100
+	model.height = 24
+	model.screen = screenChooser
+	model.focus = focusChooserList
+	model.chooser.files = make([]string, 40)
+	for i := range model.chooser.files {
+		model.chooser.files[i] = fmt.Sprintf("document-%02d.md", i+1)
+	}
+	model.resize()
+
+	for range 20 {
+		model.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	}
+
+	if model.chooser.selected != 20 {
+		t.Fatalf("expected selected document 20, got %d", model.chooser.selected)
+	}
+	if model.chooser.viewport.YOffset == 0 {
+		t.Fatal("expected selected document to scroll into view")
+	}
+
+	view := model.View()
+	if got := lineCount(view); got != model.height {
+		t.Fatalf("expected view height %d, got %d", model.height, got)
+	}
+	if !strings.Contains(view, "Use Selected") {
+		t.Fatal("expected chooser controls to remain visible below a long document list")
+	}
+}
+
 func TestRenderWidthStaysWithinWindowWhileMovingCursor(t *testing.T) {
 	model, err := NewModel(config.Config{
 		BaseURL: "http://example.com",

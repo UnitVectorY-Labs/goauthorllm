@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	ta "github.com/charmbracelet/bubbles/textarea"
 	ti "github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -193,6 +194,7 @@ type layoutState struct {
 	approvalAuto     rect
 	approvalAll      rect
 	buttons          []buttonRegion
+	documents        rect
 	files            []fileRegion
 	chooserInput     rect
 	tabs             []rect
@@ -213,6 +215,7 @@ type chooserState struct {
 	files    []string
 	selected int
 	input    ti.Model
+	viewport viewport.Model
 }
 
 type streamMsg struct {
@@ -405,6 +408,7 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 	m.chooser.input.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FAFC"))
 	m.chooser.input.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FAFC"))
 	m.chooser.input.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
+	m.chooser.viewport = viewport.New(0, 1)
 
 	if err := m.refreshChooser(); err != nil {
 		return Model{}, err
@@ -753,6 +757,14 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 		return m.updateHover(msg.X, msg.Y), nil
 	}
 	if isWheelMouse(msg) {
+		if m.screen == screenChooser && m.layout.documents.contains(msg.X, msg.Y) {
+			if isWheelUp(msg) {
+				m.chooser.viewport.ScrollUp(m.chooser.viewport.MouseWheelDelta)
+			} else {
+				m.chooser.viewport.ScrollDown(m.chooser.viewport.MouseWheelDelta)
+			}
+			return true, nil
+		}
 		if m.screen != screenWorkspace {
 			return true, nil
 		}
@@ -988,12 +1000,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		if key.Matches(msg, m.keys.moveUp) && m.focus == focusChooserList {
 			if len(m.chooser.files) > 0 && m.chooser.selected > 0 {
 				m.chooser.selected--
+				m.keepChooserSelectionVisible()
 			}
 			return true, nil
 		}
 		if key.Matches(msg, m.keys.moveDown) && m.focus == focusChooserList {
 			if len(m.chooser.files) > 0 && m.chooser.selected < len(m.chooser.files)-1 {
 				m.chooser.selected++
+				m.keepChooserSelectionVisible()
 			}
 			return true, nil
 		}
@@ -1211,6 +1225,8 @@ func (m *Model) resize() {
 	switch m.screen {
 	case screenChooser:
 		m.chooser.input.Width = max(20, contentWidth-2)
+		m.syncChooserViewport()
+		m.keepChooserSelectionVisible()
 		return
 	case screenModePicker:
 		m.modeChoices.SetSize(max(30, m.width-2), clamp(m.height-8, 9, 16))
@@ -1273,6 +1289,51 @@ func (m *Model) resize() {
 
 		m.editor.SetWidth(contentWidth)
 		m.editor.SetHeight(available)
+	}
+}
+
+// syncChooserViewport keeps the document list within the space left by the
+// chooser's other controls. The viewport owns scrolling while the chooser
+// continues to own selection and activation.
+func (m *Model) syncChooserViewport() {
+	labels := []string{"Use Selected", "Use Typed", "Refresh [Ctrl+R]", "Quit [Ctrl+Q]"}
+	if len(m.screenPath) > 0 {
+		labels = append(labels, "Back [Esc]")
+	}
+
+	// Header (3), document-pane chrome (3), gaps and remaining controls (9),
+	// and the action rows are fixed. Everything else belongs to the viewport.
+	height := max(1, m.height-15-buttonRowCount(m.width-2, labels))
+	m.chooser.viewport.Width = max(1, m.paneContentWidth())
+	m.chooser.viewport.Height = height
+
+	lines := make([]string, 0, max(1, len(m.chooser.files)))
+	if len(m.chooser.files) == 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render("No markdown files found in this folder yet."))
+	} else {
+		for i, name := range m.chooser.files {
+			prefix := "  "
+			style := lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1"))
+			if i == m.chooser.selected {
+				prefix = "• "
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FAFC")).Bold(true)
+			}
+			lines = append(lines, style.Render(prefix+name))
+		}
+	}
+	m.chooser.viewport.SetContent(strings.Join(lines, "\n"))
+}
+
+func (m *Model) keepChooserSelectionVisible() {
+	if len(m.chooser.files) == 0 || m.chooser.viewport.Height <= 0 {
+		return
+	}
+	if m.chooser.selected < m.chooser.viewport.YOffset {
+		m.chooser.viewport.SetYOffset(m.chooser.selected)
+		return
+	}
+	if m.chooser.selected >= m.chooser.viewport.YOffset+m.chooser.viewport.Height {
+		m.chooser.viewport.SetYOffset(m.chooser.selected - m.chooser.viewport.Height + 1)
 	}
 }
 
@@ -1625,32 +1686,21 @@ func (m *Model) renderChooser() string {
 	lines = append(lines, title, subtitle, "")
 	y += 3
 
-	var fileLines []string
-	if len(m.chooser.files) == 0 {
-		fileLines = append(fileLines, lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render("No markdown files found in this folder yet."))
-	} else {
-		for i, name := range m.chooser.files {
-			prefix := "  "
-			style := lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1"))
-			if i == m.chooser.selected {
-				prefix = "• "
-				style = lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FAFC")).Bold(true)
-			}
-			fileLines = append(fileLines, style.Render(prefix+name))
-		}
-	}
-
-	fileBox := m.renderPane("Documents", strings.Join(fileLines, "\n"), m.focus == focusChooserList, false, false)
+	m.syncChooserViewport()
+	fileBox := m.renderPane("Documents", m.chooser.viewport.View(), m.focus == focusChooserList, false, false)
 	lines = append(lines, fileBox)
 	fileBoxHeight := lineCount(fileBox)
-	for i := range m.chooser.files {
+	m.layout.documents = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + fileBoxHeight - 1}
+	firstVisible := m.chooser.viewport.YOffset
+	lastVisible := min(len(m.chooser.files), firstVisible+m.chooser.viewport.Height)
+	for i := firstVisible; i < lastVisible; i++ {
 		m.layout.files = append(m.layout.files, fileRegion{
 			Index: i,
 			Rect: rect{
 				x1: 2,
-				y1: y + 2 + i,
+				y1: y + 2 + i - firstVisible,
 				x2: min(contentWidth-2, m.width-1),
-				y2: y + 2 + i,
+				y2: y + 2 + i - firstVisible,
 			},
 		})
 	}
