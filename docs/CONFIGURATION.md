@@ -52,6 +52,7 @@ The file supports these optional top-level keys:
 | `guidance_file` | path | File containing generation guidance; takes precedence over `guidance` at this level |
 | `edit_instructions` | string | Instructions for directed editing |
 | `edit_instructions_file` | path | File containing directed edit instructions; takes precedence at this level |
+| `directed_edit_prompts` | list | Pre-made prompts for the directed editor in the TUI (see below) |
 | prompt name | map | Prompt override for one embedded prompt |
 
 Prompt override keys support four optional fields:
@@ -87,6 +88,29 @@ continue_prompt:
 If both `replace` and `append` are present for the same prompt, the application uses the `replace` text first and then appends the `append` text.
 
 Paths are resolved from the directory where goauthorllm is started. A file-backed value replaces the corresponding inline field at the same configuration level.
+
+### Directed Edit Prompts
+
+The `directed_edit_prompts` key lets you define a list of pre-made prompts for the interactive directed editor. When you select the "Directed editor" option in the TUI, a **Saved Prompts** picker appears above the instructions textarea. You can either:
+
+- Select a saved prompt to automatically populate the instructions box
+- Choose "(custom)" to type a free-form instruction
+- Type a custom instruction regardless of saved prompts
+
+Each entry has a `name` (shown in the picker) and `content` (the instruction text sent to the model). Selecting a prompt simply fills the instructions textarea — the rest of the workflow is unchanged.
+
+```yaml
+directed_edit_prompts:
+  - name: "Fix grammar and typos"
+    content: |
+      Find and fix all grammar mistakes, typos, and awkward phrasing in the document.
+  - name: "Simplify language"
+    content: |
+      Simplify complex sentences and replace jargon with plain language where possible.
+  - name: "Add transitions"
+    content: |
+      Add smooth transitions between paragraphs and sections to improve flow.
+```
 
 ## Flag and Environment Reference
 

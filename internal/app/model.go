@@ -87,6 +87,7 @@ const (
 	focusModeDocument
 	focusEditDefault
 	focusEditCustom
+	focusEditPromptPicker
 	focusEditInstructions
 	focusApprovalManual
 	focusApprovalAutomatic
@@ -188,6 +189,7 @@ type layoutState struct {
 	modeDocument     rect
 	editDefault      rect
 	editCustom       rect
+	editPromptPicker rect
 	editInstructions rect
 	approvalManual   rect
 	approvalAuto     rect
@@ -296,6 +298,7 @@ type Model struct {
 	editorChoices   list.Model
 	approvalChoices list.Model
 	modeChoices     list.Model
+	promptChoices   list.Model
 	workspaceTab    int
 
 	spin spinner.Model
@@ -398,6 +401,21 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 		choiceItem{title: "Edit with AI", description: "Review copy edits or carry out directed editing instructions.", value: int(workspaceEdit)},
 	})
 
+	// Build prompt picker list from configured directed edit prompts.
+	if len(cfg.DirectedEditPrompts) > 0 {
+		promptItems := make([]list.Item, 0, len(cfg.DirectedEditPrompts)+1)
+		promptItems = append(promptItems, choiceItem{title: "(custom)", description: "Type a custom instruction below.", value: -1})
+		for i, p := range cfg.DirectedEditPrompts {
+			desc := p.Content
+			if lines := strings.Count(desc, "\n"); lines > 2 {
+				// Show first line as description preview.
+				desc = strings.SplitN(desc, "\n", 2)[0]
+			}
+			promptItems = append(promptItems, choiceItem{title: p.Name, description: desc, value: i})
+		}
+		m.promptChoices = newChoiceList("Saved Prompts", promptItems)
+	}
+
 	m.chooser.input = ti.New()
 	m.chooser.input.Placeholder = "draft.md"
 	m.chooser.input.Prompt = ""
@@ -424,6 +442,10 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 
 	m.syncFocus()
 	return m, nil
+}
+
+func (m *Model) hasPromptPicker() bool {
+	return len(m.cfg.DirectedEditPrompts) > 0
 }
 
 func newChoiceList(title string, items []list.Item) list.Model {
@@ -838,6 +860,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			}
 		}
 	case screenEditOptions:
+		if m.edit.kind == editKindDirected && m.hasPromptPicker() && m.layout.editPromptPicker.contains(msg.X, msg.Y) {
+			m.focus = focusEditPromptPicker
+			m.syncFocus()
+			return true, nil
+		}
 		if m.layout.editInstructions.contains(msg.X, msg.Y) && m.edit.kind == editKindDirected {
 			m.focus = focusEditInstructions
 			m.syncFocus()
@@ -898,6 +925,8 @@ func (m *Model) updateHover(x, y int) bool {
 		next = focusFrontMatter
 	case m.screen == screenChooser && m.layout.chooserInput.contains(x, y):
 		next = focusChooserInput
+	case m.screen == screenEditOptions && m.edit.kind == editKindDirected && m.hasPromptPicker() && m.layout.editPromptPicker.contains(x, y):
+		next = focusEditPromptPicker
 	case m.screen == screenEditOptions && m.edit.kind == editKindDirected && m.layout.editInstructions.contains(x, y):
 		next = focusEditInstructions
 	case m.screen == screenWorkspace && m.mode == workspaceDocument && m.layout.editor.contains(x, y):
@@ -1024,10 +1053,27 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 	case screenEditOptions:
 		if key.Matches(msg, m.keys.focusNext) || key.Matches(msg, m.keys.focusPrev) {
-			if m.edit.kind == editKindDirected && m.focus == focusEditInstructions {
-				m.focus = focusEditNext
-			} else if m.edit.kind == editKindDirected && m.focus == focusEditNext {
-				m.focus = focusEditInstructions
+			if m.edit.kind == editKindDirected {
+				delta := 1
+				if key.Matches(msg, m.keys.focusPrev) {
+					delta = -1
+				}
+				focusOrder := []focusTarget{focusEditInstructions, focusEditNext}
+				if m.hasPromptPicker() {
+					focusOrder = append([]focusTarget{focusEditPromptPicker}, focusOrder...)
+				}
+				currentIndex := -1
+				for i, f := range focusOrder {
+					if f == m.focus {
+						currentIndex = i
+						break
+					}
+				}
+				if currentIndex >= 0 {
+					m.focus = focusOrder[(currentIndex+delta+len(focusOrder))%len(focusOrder)]
+				} else {
+					m.focus = focusOrder[0]
+				}
 			} else {
 				m.focus = focusEditDefault
 			}
@@ -1039,6 +1085,28 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		if m.focus == focusEditInstructions {
 			return false, nil
+		}
+		if m.focus == focusEditPromptPicker {
+			if key.Matches(msg, m.keys.selectItem) {
+				if item, ok := m.promptChoices.SelectedItem().(choiceItem); ok {
+					if item.value == -1 {
+						// "(custom)" selected - just move focus to instructions
+						m.focus = focusEditInstructions
+						m.syncFocus()
+					} else {
+						// Select the saved prompt content into the instructions textarea
+						if item.value >= 0 && item.value < len(m.cfg.DirectedEditPrompts) {
+							m.edit.instructions.SetValue(m.cfg.DirectedEditPrompts[item.value].Content)
+						}
+						m.focus = focusEditInstructions
+						m.syncFocus()
+					}
+					return true, nil
+				}
+			}
+			var cmd tea.Cmd
+			m.promptChoices, cmd = m.promptChoices.Update(msg)
+			return true, cmd
 		}
 		if key.Matches(msg, m.keys.selectItem) {
 			if item, ok := m.editorChoices.SelectedItem().(choiceItem); ok {
@@ -1219,6 +1287,9 @@ func (m *Model) resize() {
 		m.edit.instructions.SetWidth(contentWidth)
 		m.edit.instructions.SetHeight(clamp(m.height/4, 4, 8))
 		m.editorChoices.SetSize(max(30, m.width-2), clamp(m.height/3, 7, 12))
+		if m.hasPromptPicker() {
+			m.promptChoices.SetSize(max(30, m.width-2), clamp(len(m.cfg.DirectedEditPrompts)+1, 3, 6))
+		}
 		return
 	case screenApprovalPicker:
 		m.approvalChoices.SetSize(max(30, m.width-2), clamp(m.height-8, 9, 16))
@@ -1703,11 +1774,18 @@ func (m *Model) renderModePicker() string {
 func (m *Model) renderEditOptions() string {
 	m.layout = layoutState{}
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F8FAFC")).Render("Choose an Editor")
-	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("Use ↑/↓ and Enter. Tab moves between custom instructions and Next when needed.")
+	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("Use ↑/↓ and Enter. Tab moves between fields. Select a saved prompt to populate instructions.")
 	listView := m.editorChoices.View()
 	m.setChoiceRegions(3, len(m.editorChoices.Items()))
 	content := []string{title, subtitle, "", listView}
 	if m.edit.kind == editKindDirected {
+		// Show saved prompts picker if configured
+		if m.hasPromptPicker() {
+			pickerY := lineCount(strings.Join(content, "\n")) + 1
+			pickerView := m.promptChoices.View()
+			m.layout.editPromptPicker = rect{x1: 0, y1: pickerY, x2: max(0, m.width-1), y2: pickerY + lineCount(pickerView) - 1}
+			content = append(content, "", pickerView)
+		}
 		instructions := m.renderPane("Custom Editing Instructions", m.edit.instructions.View(), m.focus == focusEditInstructions, m.hover == focusEditInstructions, false)
 		instructionsY := lineCount(strings.Join(content, "\n")) + 1
 		m.layout.editInstructions = rect{x1: 0, y1: instructionsY, x2: max(0, m.width-1), y2: instructionsY + lineCount(instructions) - 1}
@@ -2058,9 +2136,18 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 
 	case actionPickCustomEditor:
 		m.edit.kind = editKindDirected
-		m.focus = focusEditInstructions
+		if m.hasPromptPicker() {
+			m.promptChoices.Select(0)
+			m.focus = focusEditPromptPicker
+		} else {
+			m.focus = focusEditInstructions
+		}
 		m.syncFocus()
-		m.setStatus("Custom editor selected. Write instructions, then Tab to Next and press Enter.", "muted")
+		if m.hasPromptPicker() {
+			m.setStatus("Custom editor selected. Choose a saved prompt or type custom instructions.", "muted")
+		} else {
+			m.setStatus("Custom editor selected. Write instructions, then Tab to Next and press Enter.", "muted")
+		}
 		return nil
 
 	case actionEditOptionsNext:
