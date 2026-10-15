@@ -128,3 +128,9 @@ go.work
 ## Universal Ignore Patterns
 
 *.log
+
+# Local document instruction history
+*.goauthorllm.sqlite
+*.goauthorllm.sqlite-journal
+*.goauthorllm.sqlite-wal
+*.goauthorllm.sqlite-shm

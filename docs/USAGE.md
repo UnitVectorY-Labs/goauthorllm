@@ -130,7 +130,7 @@ This mode opens the document without starting an LLM request. Use it to read or 
 
 Edit mode reviews the document and proposes exact replacements. Before opening the workspace, select an editor and an approval policy.
 
-The mode, editor, and approval screens use standard list navigation: move with `↑`/`↓`, choose with `Enter`, or click an item. Custom instructions can be entered directly; use `Tab` to move to the visible **Next** button.
+The mode, editor, and approval screens use standard list navigation: move with `↑`/`↓`, choose with `Enter`, or click an item. Custom instructions can be entered directly. Press `Enter` to continue, or `Alt+Enter` to insert a newline. Use `Alt+↑` / `Alt+↓` to recall instructions previously used with this document.
 
 - **Copy Editor** uses the built-in copy-editing prompt
 - **Custom Editor** accepts your directed-edit instructions, such as rewriting or removing a specified section
@@ -158,8 +158,13 @@ The Generate workspace has separate **Document** and **Guidance** tabs so each e
 | `Ctrl+O` | Return to file selection |
 | `Ctrl+Q` | Quit the application |
 | `Esc` | Back out of the current view or cancel an active request |
-| `Enter` | Activate the focused button or add a newline in a text area |
-| `PgUp` / `PgDn` | Page through the document editor |
+| `Enter` | Submit generation guidance, continue from directed instructions, activate a button, or insert a newline in the document |
+| `Alt+Enter` | Insert a newline in generation guidance or directed instructions |
+| `Alt+↑` / `Alt+↓` | Recall older/newer instructions in a guidance field; moving past the newest entry restores your draft |
+| `Ctrl+Z` | Undo a generation, bulk deletion, or recent manual typing in the document editor |
+| `Alt+K` | Delete from the document cursor to the end; `Ctrl+Z` restores the passage |
+| `PgUp` / `PgDn` | Page through the document editor or scroll an edit suggestion/history entry |
+| `↑` / `↓` | Scroll the current edit suggestion/history entry |
 | `←` / `→` | Change a focused workspace tab, or page through edit history |
 | `Alt+M` | Open document instructions |
 | `Alt+H` | Open edit history in Edit mode |
@@ -194,3 +199,23 @@ The document is saved automatically every two seconds after a brief idle period.
 The **Message** button opens a modal editor for the document's YAML front matter. The `system_message` field in the front matter is sent to the LLM as document-specific instructions alongside the embedded prompts.
 
 Front matter is optional. If you prefer not to use front matter, you can provide document-level guidance through the `.goauthorllm` configuration file instead.
+
+## Instruction History and Backtracking
+
+Generation guidance and directed-edit instructions are saved in a SQLite sidecar beside the document: `draft.md.goauthorllm.sqlite` for `draft.md`. Each file has its own history, with separate entries for generation and directed editing. Submitted instructions and nonempty drafts left through Back or Quit are retained across launches. Consecutive identical entries are stored once. Move or rename the sidecar with the document to keep their history together.
+
+While typing guidance or directed instructions, use `Alt+↑` and `Alt+↓` to browse saved entries. Returning past the newest entry restores the draft you were typing. Recalled instructions remain editable before submission.
+
+In Generate mode, `Ctrl+Z` in the Document tab restores the state before the last generation, including a canceled partial generation. Recent manual typing is also undoable. To remove a larger passage, put the cursor at its beginning and press `Alt+K` to remove everything through the end of the document. You can undo this deletion with `Ctrl+Z`. The last 100 undo steps are available during the session; switching documents clears them. Document changes, including undo, follow the usual autosave behavior.
+
+The interface switches to a compact layout on narrow or short terminals, including when a Termux keyboard reduces the visible terminal height. Suggestions and edit history support scrolling with `↑`/`↓`, `PgUp`/`PgDn`, or the mouse wheel.
+
+## Optional Live Model Check
+
+The normal test suite uses local fixtures. To check directed editing against a real endpoint with synthetic rename, paragraph deletion, and repeated-text examples:
+
+```sh
+GOAUTHORLLM_TEST_BASE_URL=https://your-endpoint/v1 \
+GOAUTHORLLM_TEST_MODEL=your-model \
+go test ./internal/app -run TestLiveDirectedEditing -v -count=1
+```

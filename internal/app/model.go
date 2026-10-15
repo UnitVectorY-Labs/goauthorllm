@@ -17,6 +17,7 @@ import (
 	ti "github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/config"
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/diff"
@@ -111,6 +112,8 @@ const (
 type buttonAction string
 
 const (
+	actionUndo               buttonAction = "undo"
+	actionDeleteToEnd        buttonAction = "delete-to-end"
 	actionContinue           buttonAction = "continue"
 	actionNewSection         buttonAction = "new-section"
 	actionAcceptSuggestion   buttonAction = "accept-suggestion"
@@ -227,7 +230,7 @@ type editSuggestion struct {
 }
 
 func (e editSuggestion) empty() bool {
-	return strings.TrimSpace(e.OldText) == "" && strings.TrimSpace(e.NewText) == ""
+	return e.OldText == "" && e.NewText == ""
 }
 
 type editHistoryEntry struct {
@@ -318,7 +321,11 @@ type Model struct {
 	generationCh      <-chan llm.StreamEvent
 	generationCancel  context.CancelFunc
 
-	edit editState
+	edit              editState
+	undoBodies        []string
+	instructionRecall instructionRecall
+	lastUndoEditAt    time.Time
+	reviewOffset      int
 }
 
 // NewModel creates a fully initialized Model ready for Bubble Tea.
@@ -530,6 +537,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case screenEditOptions:
 		if m.focus == focusEditInstructions {
 			var cmd tea.Cmd
+			if k, ok := msg.(tea.KeyMsg); ok && k.Type == tea.KeyEnter && k.Alt {
+				msg = tea.KeyMsg{Type: tea.KeyEnter}
+			}
 			m.edit.instructions, cmd = m.edit.instructions.Update(msg)
 			return m, cmd
 		}
@@ -540,7 +550,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.approvalChoices, cmd = m.approvalChoices.Update(msg)
 		return m, cmd
-		return m, nil
 	case screenWorkspace:
 		return m.updateWorkspaceInputs(msg)
 	default:
@@ -550,12 +559,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the current UI state.
 func (m *Model) View() string {
-	if m.width == 0 || m.height == 0 {
+	if m.width <= 0 || m.height <= 0 {
 		return "Loading..."
 	}
 
+	m.resize()
+	m.fitWorkspace()
 	var view string
 	switch {
+	case m.compact():
+		view = m.renderCompact()
 	case m.showFrontMatter:
 		view = m.renderFrontMatterModal()
 	case m.screen == screenChooser:
@@ -581,6 +594,9 @@ func (m *Model) View() string {
 		lines = lines[:m.height]
 	}
 
+	for i := range lines {
+		lines[i] = ansi.Truncate(lines[i], m.width, "")
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -699,6 +715,7 @@ func (m *Model) startNextSuggestion(note string) tea.Cmd {
 	m.edit.pending = m.edit.pending[1:]
 	m.edit.batchPosition++
 	m.edit.suggestion = &suggestion
+	m.reviewOffset = 0
 
 	if m.edit.approval == approvalAll {
 		if !m.applySuggestion(suggestion, "approved-all") {
@@ -753,6 +770,14 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 		return m.updateHover(msg.X, msg.Y), nil
 	}
 	if isWheelMouse(msg) {
+		if m.screen == screenWorkspace && m.mode == workspaceEdit && m.workspaceTab < 2 && !m.showFrontMatter {
+			if isWheelUp(msg) {
+				m.reviewOffset = max(0, m.reviewOffset-3)
+			} else {
+				m.reviewOffset += 3
+			}
+			return true, nil
+		}
 		if m.screen != screenWorkspace {
 			return true, nil
 		}
@@ -919,11 +944,60 @@ func (m *Model) updateHover(x, y int) bool {
 // --- Key handling ---
 
 func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
-	if isTextInputFocus(m.focus) && (msg.Type == tea.KeyEnter || msg.Type == tea.KeyCtrlM) {
+	if m.screen == screenWorkspace && m.mode == workspaceEdit && m.workspaceTab < 2 && !m.showFrontMatter {
+		switch msg.Type {
+		case tea.KeyUp:
+			m.reviewOffset = max(0, m.reviewOffset-1)
+			return true, nil
+		case tea.KeyDown:
+			m.reviewOffset++
+			return true, nil
+		case tea.KeyPgUp:
+			m.reviewOffset = max(0, m.reviewOffset-max(1, m.editor.Height()-1))
+			return true, nil
+		case tea.KeyPgDown:
+			m.reviewOffset += max(1, m.editor.Height()-1)
+			return true, nil
+		}
+	}
+
+	if m.focus == focusPrompt || m.focus == focusEditInstructions {
+		if msg.String() == "alt+up" || msg.String() == "alt+down" {
+			m.recallInstruction(msg.String() == "alt+up")
+			return true, nil
+		}
+		if msg.Type == tea.KeyEnter {
+			if msg.Alt {
+				return false, nil
+			}
+			if m.busy() {
+				return true, nil
+			}
+			if m.focus == focusEditInstructions {
+				return true, m.runAction(actionEditOptionsNext)
+			}
+			return true, m.startGeneration(modeContinue)
+		}
+	}
+	if m.screen == screenWorkspace && m.focus == focusEditor && !m.busy() && !m.showFrontMatter {
+		if msg.String() == "ctrl+z" {
+			m.undoBody()
+			return true, nil
+		}
+		if msg.String() == "alt+k" {
+			m.deleteToEnd()
+			return true, nil
+		}
+	}
+	if isTextInputFocus(m.focus) && msg.Type == tea.KeyEnter {
 		return false, nil
 	}
 
 	if direction, ok := m.rawWheelDirection(msg); ok {
+		if m.screen == screenWorkspace && m.mode == workspaceEdit && m.workspaceTab < 2 && !m.showFrontMatter {
+			m.reviewOffset = max(0, m.reviewOffset+direction*3)
+			return true, nil
+		}
 		if m.generating {
 			return true, nil
 		}
@@ -1103,6 +1177,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 				delta = -1
 			}
 			m.edit.historyIndex = clamp(m.edit.historyIndex+delta, 0, max(0, len(m.edit.history)-1))
+			m.reviewOffset = 0
 			return true, nil
 		}
 		if key.Matches(msg, m.keys.save) {
@@ -1173,6 +1248,9 @@ func (m *Model) updateWorkspaceInputs(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case focusPrompt:
 		before := m.prompt.Value()
 		var cmd tea.Cmd
+		if k, ok := msg.(tea.KeyMsg); ok && k.Type == tea.KeyEnter && k.Alt {
+			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		}
 		m.prompt, cmd = m.prompt.Update(msg)
 		if before != m.prompt.Value() {
 			m.setStatus("Generation guidance updated", "muted")
@@ -1196,6 +1274,10 @@ func (m *Model) updateWorkspaceInputs(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.editor, cmd = m.editor.Update(msg)
 		if before != m.editor.Value() {
+			if time.Since(m.lastUndoEditAt) > 750*time.Millisecond {
+				m.pushUndo(before)
+			}
+			m.lastUndoEditAt = time.Now()
 			m.doc.SetBody(m.editor.Value())
 			m.lastEditAt = time.Now()
 		}
@@ -1206,6 +1288,10 @@ func (m *Model) updateWorkspaceInputs(msg tea.Msg) (tea.Model, tea.Cmd) {
 // --- Layout ---
 
 func (m *Model) resize() {
+	if m.compact() {
+		m.resizeCompact()
+		return
+	}
 	contentWidth := m.paneContentWidth()
 
 	switch m.screen {
@@ -1217,8 +1303,8 @@ func (m *Model) resize() {
 		return
 	case screenEditOptions:
 		m.edit.instructions.SetWidth(contentWidth)
-		m.edit.instructions.SetHeight(clamp(m.height/4, 4, 8))
-		m.editorChoices.SetSize(max(30, m.width-2), clamp(m.height/3, 7, 12))
+		m.edit.instructions.SetHeight(clamp(m.height-22, 1, 8))
+		m.editorChoices.SetSize(max(1, m.width-2), 7)
 		return
 	case screenApprovalPicker:
 		m.approvalChoices.SetSize(max(30, m.width-2), clamp(m.height-8, 9, 16))
@@ -1335,6 +1421,7 @@ func (m *Model) advanceWorkspaceFocus(delta int) {
 
 func (m *Model) switchWorkspaceTab(index int) {
 	m.workspaceTab = index
+	m.reviewOffset = 0
 	if m.mode == workspaceGenerate {
 		if index == 1 {
 			m.focus = focusPrompt
@@ -1425,6 +1512,8 @@ func (m *Model) renderGenerateWorkspace() string {
 		buttons = append(buttons,
 			actionButton{Action: actionContinue, Label: "Continue [Ctrl+G]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusContinueButton},
 			actionButton{Action: actionNewSection, Label: "New Section [Ctrl+N]", Background: colorBlue, Foreground: colorBlueLight, Focus: focusNewSectionButton},
+			actionButton{Action: actionUndo, Label: "Undo [Ctrl+Z]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)},
+			actionButton{Action: actionDeleteToEnd, Label: "Delete to end [Alt+K]", Background: colorBlueDark, Foreground: colorBlueLight, Focus: focusTarget(-1)},
 		)
 		buttons = append(buttons,
 			actionButton{Action: actionSave, Label: "Save [Ctrl+S]", Background: colorOrangeDark, Foreground: colorOrangeLight, Focus: focusSaveButton},
@@ -1451,12 +1540,12 @@ func (m *Model) renderEditWorkspace() string {
 	var pane string
 	switch m.workspaceTab {
 	case 1:
-		pane = m.renderPane("Edit History", m.renderEditHistoryBody(), m.focus == focusWorkspaceTabs, false, false)
+		pane = m.renderPane("Edit History · ↑/↓ scroll", m.reviewWindow(m.renderEditHistoryBody(), m.paneContentWidth(), m.editor.Height()), m.focus == focusWorkspaceTabs, false, false)
 	case 2:
 		pane = m.renderPane("Document", m.editor.View(), m.focus == focusEditor, m.hover == focusEditor, m.doc != nil && m.doc.Dirty)
 		m.layout.editor = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(pane) - 1}
 	default:
-		pane = m.renderPane("Edit Suggestion", m.renderSuggestionBody(), suggestionFocused(m.focus) || m.focus == focusWorkspaceTabs, false, false)
+		pane = m.renderPane("Edit Suggestion · ↑/↓ scroll", m.reviewWindow(m.renderSuggestionBody(), m.paneContentWidth(), m.editor.Height()), suggestionFocused(m.focus) || m.focus == focusWorkspaceTabs, false, false)
 		m.layout.prompt = rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y + lineCount(pane) - 1}
 	}
 	lines = append(lines, pane, "")
@@ -1497,7 +1586,11 @@ func (m *Model) renderTabs(labels []string, y int) string {
 	var rendered []string
 	x := 0
 	for index, label := range labels {
-		style := lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("#94A3B8")).Background(lipgloss.Color("#1E293B"))
+		padding := 2
+		if m.compact() {
+			padding = 0
+		}
+		style := lipgloss.NewStyle().Padding(0, padding).Foreground(lipgloss.Color("#94A3B8")).Background(lipgloss.Color("#1E293B"))
 		if m.workspaceTab == index {
 			style = style.Foreground(lipgloss.Color("#F8FAFC")).Background(lipgloss.Color(colorOrangeDark)).Bold(true)
 		}
@@ -1626,31 +1719,34 @@ func (m *Model) renderChooser() string {
 	y += 3
 
 	var fileLines []string
+	room := max(1, m.height-18)
+	start := max(0, m.chooser.selected-room+1)
 	if len(m.chooser.files) == 0 {
 		fileLines = append(fileLines, lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render("No markdown files found in this folder yet."))
 	} else {
-		for i, name := range m.chooser.files {
+		for i := start; i < min(len(m.chooser.files), start+room); i++ {
+			name := m.chooser.files[i]
 			prefix := "  "
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1"))
 			if i == m.chooser.selected {
 				prefix = "• "
 				style = lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FAFC")).Bold(true)
 			}
-			fileLines = append(fileLines, style.Render(prefix+name))
+			fileLines = append(fileLines, style.Render(ansi.Truncate(prefix+name, m.paneContentWidth(), "…")))
 		}
 	}
 
 	fileBox := m.renderPane("Documents", strings.Join(fileLines, "\n"), m.focus == focusChooserList, false, false)
 	lines = append(lines, fileBox)
 	fileBoxHeight := lineCount(fileBox)
-	for i := range m.chooser.files {
+	for i := start; i < min(len(m.chooser.files), start+room); i++ {
 		m.layout.files = append(m.layout.files, fileRegion{
 			Index: i,
 			Rect: rect{
 				x1: 2,
-				y1: y + 2 + i,
+				y1: y + 2 + i - start,
 				x2: min(contentWidth-2, m.width-1),
-				y2: y + 2 + i,
+				y2: y + 2 + i - start,
 			},
 		})
 	}
@@ -1915,6 +2011,17 @@ func (m *Model) choiceAt(x, y int) (int, bool) {
 // --- Actions ---
 
 func (m *Model) runAction(action buttonAction) tea.Cmd {
+	if action == actionUndo || action == actionDeleteToEnd {
+		if m.busy() || m.doc == nil {
+			return nil
+		}
+		if action == actionUndo {
+			m.undoBody()
+		} else {
+			m.deleteToEnd()
+		}
+		return nil
+	}
 	switch action {
 	case actionContinue:
 		if m.mode != workspaceGenerate || m.doc == nil || m.generating {
@@ -2042,6 +2149,7 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		m.edit.requesting = false
 		m.edit.reviewing = false
 		m.edit.instructions.SetValue("")
+		m.instructionRecall = instructionRecall{index: -1}
 		m.editorChoices.Select(0)
 		m.approvalChoices.Select(0)
 		m.focus = focusEditDefault
@@ -2060,12 +2168,15 @@ func (m *Model) runAction(action buttonAction) tea.Cmd {
 		m.edit.kind = editKindDirected
 		m.focus = focusEditInstructions
 		m.syncFocus()
-		m.setStatus("Custom editor selected. Write instructions, then Tab to Next and press Enter.", "muted")
+		m.setStatus("Enter submits; Alt+Enter adds a line; Alt+↑/↓ recalls instructions.", "muted")
 		return nil
 
 	case actionEditOptionsNext:
 		if m.edit.kind == editKindDirected && strings.TrimSpace(m.edit.instructions.Value()) == "" {
 			m.setStatus("Add custom editing instructions before continuing", "error")
+			return nil
+		}
+		if m.edit.kind == editKindDirected && !m.persistInstruction("directed", m.edit.instructions.Value()) {
 			return nil
 		}
 		m.screen = screenApprovalPicker
@@ -2203,6 +2314,10 @@ func (m *Model) openDocument(path string) error {
 		doc.SetFrontMatter(fmt.Sprintf("title: %s", stem))
 	}
 
+	if m.doc == nil || m.doc.Path != doc.Path {
+		m.undoBodies = nil
+		m.instructionRecall = instructionRecall{index: -1}
+	}
 	m.doc = doc
 	m.pendingPath = doc.Path
 	m.pendingName = filepath.Base(doc.Path)
@@ -2239,6 +2354,12 @@ func (m *Model) saveCurrentDocument() error {
 }
 
 func (m *Model) saveBeforeLeave(action string) error {
+	if m.screen == screenEditOptions && !m.persistInstruction("directed", m.edit.instructions.Value()) {
+		return fmt.Errorf("could not save instructions")
+	}
+	if m.screen == screenWorkspace && m.mode == workspaceGenerate && !m.persistInstruction("generation", m.prompt.Value()) {
+		return fmt.Errorf("could not save guidance")
+	}
 	if m.doc == nil || m.busy() || !m.doc.Dirty {
 		return nil
 	}
@@ -2258,6 +2379,9 @@ func (m *Model) startGeneration(mode generationMode) tea.Cmd {
 	m.doc.SetFrontMatter(m.frontMatter.Value())
 	m.doc.SetBody(m.editor.Value())
 
+	if !m.persistInstruction("generation", m.prompt.Value()) {
+		return nil
+	}
 	body := m.doc.Body
 	systemMessage := m.doc.SystemMessage
 	prompt := m.prompt.Value()
@@ -2268,6 +2392,7 @@ func (m *Model) startGeneration(mode generationMode) tea.Cmd {
 		return nil
 	}
 
+	m.pushUndo(m.doc.Body)
 	m.generating = true
 	m.generationID++
 	m.generationMode = mode
@@ -2277,6 +2402,7 @@ func (m *Model) startGeneration(mode generationMode) tea.Cmd {
 	m.editor.SetValue(m.doc.Body)
 	m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
 	m.editor.Focus()
+	m.workspaceTab = 0
 	m.focus = focusEditor
 	m.syncFocus()
 
@@ -2629,9 +2755,9 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 			return editSuggestionResult{Err: err}
 		}
 
-		var batch directedEditBatch
-		if err := json.Unmarshal([]byte(normalizeStructuredJSON(raw)), &batch); err != nil {
-			feedback = "The previous response was not valid JSON for the requested schema. Return only the structured object."
+		batch, err := decodeEditBatch(raw, batchSize)
+		if err != nil {
+			feedback = "Invalid editing response: " + err.Error() + ". Return only the complete structured object."
 			continue
 		}
 		if len(batch.Suggestions) == 0 {
@@ -2639,7 +2765,10 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 		}
 		validated, validationFeedback, validationErr := validateDirectedSuggestions(ctx, client, body, batch.Suggestions, overrides)
 		if validationErr != nil {
-			feedback = "The previous suggestions could not be repaired. Return exact, uniquely matching replacements."
+			if ctx.Err() != nil {
+				return editSuggestionResult{Err: ctx.Err()}
+			}
+			feedback = "The previous suggestions could not be repaired: " + validationErr.Error() + ". Return exact, uniquely matching replacements."
 			continue
 		}
 		if validationFeedback != "" {
@@ -2654,7 +2783,7 @@ func fetchEditSuggestion(ctx context.Context, client *llm.Client, body, fileSyst
 		}
 	}
 
-	return editSuggestionResult{Err: fmt.Errorf("could not obtain a unique edit suggestion")}
+	return editSuggestionResult{Err: fmt.Errorf("could not obtain a unique edit suggestion: %s", feedback)}
 }
 
 type directedEditBatch struct {
@@ -2673,9 +2802,9 @@ func fetchDirectedEditSuggestions(ctx context.Context, client *llm.Client, body,
 		if err != nil {
 			return editSuggestionResult{Err: err}
 		}
-		var batch directedEditBatch
-		if err := json.Unmarshal([]byte(normalizeStructuredJSON(raw)), &batch); err != nil {
-			feedback = "The previous response was not valid JSON for the directed editing schema. Return only the structured object."
+		batch, err := decodeEditBatch(raw, batchSize)
+		if err != nil {
+			feedback = "Invalid directed editing response: " + err.Error() + ". Return only the complete structured object."
 			continue
 		}
 		if len(batch.Suggestions) == 0 {
@@ -2684,7 +2813,10 @@ func fetchDirectedEditSuggestions(ctx context.Context, client *llm.Client, body,
 
 		validated, validationFeedback, validationErr := validateDirectedSuggestions(ctx, client, body, batch.Suggestions, overrides)
 		if validationErr != nil {
-			feedback = "The previous suggestions could not be repaired. Return exact, uniquely matching replacements."
+			if ctx.Err() != nil {
+				return editSuggestionResult{Err: ctx.Err()}
+			}
+			feedback = "The previous suggestions could not be repaired: " + validationErr.Error() + ". Return exact, uniquely matching replacements."
 			continue
 		}
 		if validationFeedback != "" {
@@ -2697,7 +2829,7 @@ func fetchDirectedEditSuggestions(ctx context.Context, client *llm.Client, body,
 			Note:            fmt.Sprintf("Suggested %d directed changes", len(validated)),
 		}
 	}
-	return editSuggestionResult{Err: fmt.Errorf("could not obtain a valid directed editing batch")}
+	return editSuggestionResult{Err: fmt.Errorf("could not obtain a valid directed editing batch: %s", feedback)}
 }
 
 func validateDirectedSuggestions(ctx context.Context, client *llm.Client, body string, suggestions []editSuggestion, overrides prompts.Overrides) ([]editSuggestion, string, error) {
@@ -2706,7 +2838,7 @@ func validateDirectedSuggestions(ctx context.Context, client *llm.Client, body s
 	var spans []span
 	for index, suggestion := range suggestions {
 		if suggestion.empty() || suggestion.OldText == suggestion.NewText {
-			return nil, fmt.Sprintf("Suggestion %d must contain different, non-empty old_text and new_text values.", index+1), nil
+			return nil, fmt.Sprintf("Suggestion %d must contain non-empty old_text and a different new_text (which may be empty for deletion).", index+1), nil
 		}
 		if document.MatchCount(body, suggestion.OldText) != 1 {
 			repaired, err := repairEditSuggestion(ctx, client, body, suggestion, overrides)
@@ -2715,7 +2847,7 @@ func validateDirectedSuggestions(ctx context.Context, client *llm.Client, body s
 			}
 			suggestion = repaired
 		}
-		if suggestion.empty() || document.MatchCount(body, suggestion.OldText) != 1 {
+		if suggestion.empty() || suggestion.OldText == suggestion.NewText || document.MatchCount(body, suggestion.OldText) != 1 {
 			return nil, fmt.Sprintf("Suggestion %d could not be repaired to match exactly one location.", index+1), nil
 		}
 		start := strings.Index(body, suggestion.OldText)
@@ -2811,11 +2943,17 @@ func repairEditSuggestion(ctx context.Context, client *llm.Client, body string, 
 	if err != nil {
 		return editSuggestion{}, err
 	}
-	var repaired editSuggestion
-	if err := json.Unmarshal([]byte(raw), &repaired); err != nil {
+	var repaired struct {
+		OldText *string `json:"old_text"`
+		NewText *string `json:"new_text"`
+	}
+	if err := json.Unmarshal([]byte(normalizeStructuredJSON(raw)), &repaired); err != nil {
 		return editSuggestion{}, err
 	}
-	return repaired, nil
+	if repaired.OldText == nil || repaired.NewText == nil {
+		return editSuggestion{}, fmt.Errorf("repaired suggestion requires old_text and new_text")
+	}
+	return editSuggestion{OldText: *repaired.OldText, NewText: *repaired.NewText}, nil
 }
 
 func approveEditSuggestion(ctx context.Context, client *llm.Client, body string, suggestion editSuggestion, kind editKind, instructions string, overrides prompts.Overrides) (bool, error) {
@@ -2834,7 +2972,7 @@ func approveEditSuggestion(ctx context.Context, client *llm.Client, body string,
 	var result struct {
 		Approve bool `json:"approve"`
 	}
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+	if err := json.Unmarshal([]byte(normalizeStructuredJSON(raw)), &result); err != nil {
 		return false, err
 	}
 	return result.Approve, nil
@@ -3104,7 +3242,7 @@ func isSentenceJoinRune(r rune) bool {
 // --- Utility ---
 
 func (m Model) paneContentWidth() int {
-	return max(20, m.width-6)
+	return max(1, m.width-6)
 }
 
 func truncateToWidth(value string, width int) string {
@@ -3122,17 +3260,7 @@ func truncateToWidth(value string, width int) string {
 }
 
 func truncateRenderedLine(value string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width == 1 {
-		return string(runes[:1])
-	}
-	return string(runes[:width-1]) + "…"
+	return ansi.Truncate(value, max(0, width), "…")
 }
 
 func isWheelMouse(msg tea.MouseMsg) bool {
@@ -3239,7 +3367,7 @@ func lineCount(value string) int {
 }
 
 func promptHelpText() string {
-	return "Prompt is optional. Continue extends the current section. New Section starts the next heading."
+	return "Enter: continue · Alt+Enter: newline · Alt+↑/↓: recall"
 }
 
 func editHelpText(kind editKind) string {
