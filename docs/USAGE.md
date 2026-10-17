@@ -157,6 +157,7 @@ The Generate workspace has separate **Document** and **Guidance** tabs so each e
 | `Ctrl+S` | Save the document |
 | `Ctrl+O` | Return to file selection |
 | `Ctrl+Q` | Quit the application |
+| `Alt+E` | Open or close the last error in a wrapped, scrollable view; use ↑/↓ or PgUp/PgDn to scroll and Esc to close |
 | `Esc` | Back out of the current view or cancel an active request |
 | `Enter` | Submit generation guidance, continue from directed instructions, activate a button, or insert a newline in the document |
 | `Alt+Enter` | Insert a newline in generation guidance or directed instructions |

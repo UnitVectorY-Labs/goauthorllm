@@ -309,6 +309,9 @@ type Model struct {
 	layout layoutState
 
 	statusText      string
+	lastError       string
+	showError       bool
+	errorOffset     int
 	statusLevel     string
 	lastEditAt      time.Time
 	showFrontMatter bool
@@ -567,6 +570,8 @@ func (m *Model) View() string {
 	m.fitWorkspace()
 	var view string
 	switch {
+	case m.showError:
+		view = m.renderErrorDetails()
 	case m.compact():
 		view = m.renderCompact()
 	case m.showFrontMatter:
@@ -613,7 +618,7 @@ func (m *Model) handleStreamMsg(msg streamMsg) (tea.Model, tea.Cmd) {
 		if msg.event.Err == context.Canceled {
 			m.setStatus("Generation canceled", "muted")
 		} else if m.generationStarted {
-			m.setStatus("Generation interrupted, partial text kept", "error")
+			m.setStatus("Generation interrupted, partial text kept: "+msg.event.Err.Error(), "error")
 		} else {
 			m.setStatus("Generation failed: "+msg.event.Err.Error(), "error")
 		}
@@ -766,6 +771,16 @@ func (m *Model) editProgressLabel(prefix string) string {
 // --- Mouse handling ---
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
+	if m.showError {
+		if isWheelMouse(msg) {
+			if isWheelUp(msg) {
+				m.errorOffset = max(0, m.errorOffset-3)
+			} else {
+				m.errorOffset += 3
+			}
+		}
+		return true, nil
+	}
 	if msg.Action == tea.MouseActionMotion {
 		return m.updateHover(msg.X, msg.Y), nil
 	}
@@ -944,6 +959,36 @@ func (m *Model) updateHover(x, y int) bool {
 // --- Key handling ---
 
 func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
+	if msg.String() == "alt+e" && m.lastError != "" {
+		m.showError = !m.showError
+		m.errorOffset = 0
+		return true, nil
+	}
+	if m.showError {
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.showError = false
+		case tea.KeyUp:
+			m.errorOffset = max(0, m.errorOffset-1)
+		case tea.KeyDown:
+			m.errorOffset++
+		case tea.KeyPgUp:
+			m.errorOffset = max(0, m.errorOffset-max(1, m.height-2))
+		case tea.KeyPgDown:
+			m.errorOffset += max(1, m.height-2)
+		case tea.KeyHome:
+			m.errorOffset = 0
+		case tea.KeyEnd:
+			m.errorOffset = len(m.lastError)
+		case tea.KeyCtrlQ:
+			if err := m.saveBeforeLeave("quit"); err != nil {
+				m.setStatus(err.Error(), "error")
+				return true, nil
+			}
+			return true, tea.Quit
+		}
+		return true, nil
+	}
 	if m.screen == screenWorkspace && m.mode == workspaceEdit && m.workspaceTab < 2 && !m.showFrontMatter {
 		switch msg.Type {
 		case tea.KeyUp:
@@ -1895,6 +1940,9 @@ func (m Model) renderPane(title, body string, focused, hovered, dirty bool) stri
 
 func (m Model) renderStatusBar() string {
 	status := m.statusText
+	if m.statusLevel == "error" {
+		status = "Alt+E: details · " + status
+	}
 	if m.busy() {
 		status = m.spin.View() + " " + status
 	}
@@ -2555,6 +2603,10 @@ func (m *Model) appendEditHistory(action string, suggestion editSuggestion) {
 func (m *Model) setStatus(text, level string) {
 	m.statusText = text
 	m.statusLevel = level
+	if level == "error" {
+		m.lastError = text
+		m.errorOffset = 0
+	}
 }
 
 func (m *Model) busy() bool {
