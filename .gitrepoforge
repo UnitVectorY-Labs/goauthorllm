@@ -11,3 +11,8 @@ config:
   docs:
     enabled: true
     domain: goauthorllm.unitvectorylabs.com
+  gitignore:
+    - "*.goauthorllm.sqlite"
+    - "*.goauthorllm.sqlite-journal"
+    - "*.goauthorllm.sqlite-wal"
+    - "*.goauthorllm.sqlite-shm"
