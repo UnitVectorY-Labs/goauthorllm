@@ -1,7 +1,8 @@
 package app
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,11 +30,15 @@ func TestTUIGenerationRequestFromLocalConfig(t *testing.T) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("unexpected request path: %s", r.URL.Path)
 		}
-		var payload json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		var payload any
+		if err := json.UnmarshalRead(r.Body, &payload); err != nil {
 			t.Error(err)
 		}
-		requests <- payload
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Error(err)
+		}
+		requests <- encoded
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\" A bird sang.\"}}]}\n\ndata: [DONE]\n\n")
 	}))
@@ -83,7 +88,7 @@ func TestTUIGenerationRequestFromLocalConfig(t *testing.T) {
 	if !strings.HasSuffix(request.Messages[0].Content, "You are the author of content.") {
 		t.Fatal("local system prompt append missing")
 	}
-	encoded, _ := json.MarshalIndent(request.Messages, "", "  ")
+	encoded, _ := json.Marshal(request.Messages, jsontext.WithIndent("  "))
 	t.Logf("TUI messages:\n%s", encoded)
 }
 
@@ -158,5 +163,28 @@ func TestLiveTUIGeneration(t *testing.T) {
 		case <-deadline.C:
 			t.Fatal("generation timed out")
 		}
+	}
+}
+
+func TestEditSchemasAreEncodedAsObjects(t *testing.T) {
+	for name, schema := range map[string]jsontext.Value{
+		"suggestion": editSuggestionSchema,
+		"batch":      editBatchSchema(5),
+		"approval":   editApprovalSchema,
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{"schema": schema})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded struct {
+				Schema struct {
+					Type string `json:"type"`
+				} `json:"schema"`
+			}
+			if err := json.Unmarshal(payload, &decoded); err != nil || decoded.Schema.Type != "object" {
+				t.Fatalf("schema was not encoded as an object: %s (%v)", payload, err)
+			}
+		})
 	}
 }
