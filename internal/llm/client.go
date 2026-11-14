@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,8 +41,8 @@ type StreamEvent struct {
 type chatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []Message       `json:"messages"`
-	Temperature    float64         `json:"temperature,omitempty"`
-	Stream         bool            `json:"stream,omitempty"`
+	Temperature    float64         `json:"temperature,omitzero"`
+	Stream         bool            `json:"stream,omitzero"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
 
@@ -54,7 +54,7 @@ type responseFormat struct {
 type jsonSchema struct {
 	Name   string `json:"name"`
 	Schema any    `json:"schema"`
-	Strict bool   `json:"strict,omitempty"`
+	Strict bool   `json:"strict,omitzero"`
 }
 
 type chatResponse struct {

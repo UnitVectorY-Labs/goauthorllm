@@ -2,7 +2,7 @@ package app
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -150,7 +150,7 @@ func chatServer(t *testing.T, content func(int32) string) *httptest.Server {
 			}},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(response); err != nil {
+		if err := json.MarshalWrite(w, response); err != nil {
 			t.Errorf("encode response: %v", err)
 		}
 	}))
