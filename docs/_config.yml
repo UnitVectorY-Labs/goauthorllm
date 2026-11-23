@@ -1,9 +1,13 @@
 title: goauthorllm
 description: "A terminal UI for using an LLM to continue, review, and copy edit Markdown documents in place."
 
-remote_theme: UnitVectorY-Labs/uvy-docs-theme@v0.2.0
+remote_theme: UnitVectorY-Labs/uvy-docs-theme@v0.4.0
 plugins:
   - jekyll-remote-theme
+
+uvy_docs:
+  license: "MIT License"
+  license_url: "https://github.com/UnitVectorY-Labs/goauthorllm/blob/main/LICENSE"
 
 callouts:
   highlight:
