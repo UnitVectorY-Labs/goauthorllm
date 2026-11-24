@@ -2,7 +2,8 @@ package app
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -3064,7 +3065,7 @@ func feedbackMessage(content string) llm.Message {
 	return llm.Message{Role: "user", Name: "validation_feedback", Content: content}
 }
 
-var editSuggestionSchema = json.RawMessage(`{
+var editSuggestionSchema = jsontext.Value(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -3082,8 +3083,8 @@ var editSuggestionSchema = json.RawMessage(`{
   "required": ["old_text", "new_text", "remaining_rounds"]
 }`)
 
-func editBatchSchema(maxItems int) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(`{
+func editBatchSchema(maxItems int) jsontext.Value {
+	return jsontext.Value(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -3117,7 +3118,7 @@ func normalizeStructuredJSON(raw string) string {
 	return strings.TrimSpace(trimmed)
 }
 
-var editApprovalSchema = json.RawMessage(`{
+var editApprovalSchema = jsontext.Value(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {"approve": {"type": "boolean"}},

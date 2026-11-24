@@ -2,7 +2,7 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -222,5 +222,44 @@ func TestStreamChatOmitsAuthHeaderWhenKeyEmpty(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestJSONV2ResponseValidation(t *testing.T) {
+	client := NewClient("http://example.com", "model", "", time.Second)
+	for _, tc := range []struct{ name, body string }{
+		{"duplicate names", `{"choices":[],"choices":[{"message":{"content":"ok"}}]}`},
+		{"invalid UTF-8", "{\"choices\":[{\"message\":{\"content\":\"\xff\"}}]}"},
+		{"case sensitive names", `{"Choices":[{"message":{"content":"ok"}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := client.consumeStructuredResponse(strings.NewReader(tc.body)); err == nil {
+				t.Fatal("expected invalid response to be rejected")
+			}
+			if err := client.consumeSSE(strings.NewReader("data: "+tc.body+"\n\n"), func(StreamEvent) error { return nil }); err == nil && tc.name != "case sensitive names" {
+				t.Fatal("expected invalid streaming response to be rejected")
+			}
+		})
+	}
+}
+
+func TestRequestJSONPreservesOptionalFields(t *testing.T) {
+	payload, err := json.Marshal(chatRequest{Model: "model", Messages: []Message{{Role: "user", Content: "hi"}}, ResponseFormat: &responseFormat{Type: "json_schema", JSONSchema: &jsonSchema{Name: "test", Schema: map[string]any{"type": "object"}, Strict: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"temperature", "stream"} {
+		if _, ok := got[name]; ok {
+			t.Errorf("unexpected zero field %q in %s", name, payload)
+		}
+	}
+	format := got["response_format"].(map[string]any)
+	schema := format["json_schema"].(map[string]any)
+	if schema["strict"] != true {
+		t.Fatalf("strict schema missing: %s", payload)
 	}
 }

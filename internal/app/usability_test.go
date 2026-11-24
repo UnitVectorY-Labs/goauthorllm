@@ -242,3 +242,15 @@ func TestDirectedWhitespaceDeletionIsValid(t *testing.T) {
 		t.Fatalf("whitespace deletion rejected: %s %v", feedback, err)
 	}
 }
+
+func TestDecodeEditBatchRejectsAmbiguousJSON(t *testing.T) {
+	for _, raw := range []string{
+		`{"suggestions":[],"remaining_rounds":0,"remaining_rounds":1}`,
+		"{\"suggestions\":[{\"old_text\":\"\xff\",\"new_text\":\"x\"}],\"remaining_rounds\":0}",
+		`{"Suggestions":[],"remaining_rounds":0}`,
+	} {
+		if _, err := decodeEditBatch(raw, 5); err == nil {
+			t.Errorf("expected rejection of %q", raw)
+		}
+	}
+}
