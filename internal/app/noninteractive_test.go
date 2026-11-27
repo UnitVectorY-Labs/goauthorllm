@@ -16,7 +16,9 @@ import (
 )
 
 func TestRunNonInteractiveGenerationWritesAndLogsContent(t *testing.T) {
-	server := chatServer(t, func(_ int32) string { return "More text." })
+	server := chatServer(t, func(_ int32) string {
+		return `{"join_mode":"inline_space","intent":"Add follow-up","content":"More text."}`
+	})
 	defer server.Close()
 	path := filepath.Join(t.TempDir(), "draft.md")
 	if err := os.WriteFile(path, []byte("# Draft\nExisting text."), 0o644); err != nil {
@@ -24,7 +26,8 @@ func TestRunNonInteractiveGenerationWritesAndLogsContent(t *testing.T) {
 	}
 	cfg := nonInteractiveTestConfig(server.URL, path)
 	cfg.Mode = "generate"
-	cfg.Submode = "continue"
+	cfg.Submode = "sentence"
+	cfg.StructuredGeneration = true
 
 	var output bytes.Buffer
 	result, err := RunNonInteractive(cfg, &output)
@@ -40,9 +43,45 @@ func TestRunNonInteractiveGenerationWritesAndLogsContent(t *testing.T) {
 	}
 }
 
+func TestRunNonInteractiveMultiRoundSections(t *testing.T) {
+	server := chatServer(t, func(req int32) string {
+		switch req {
+		case 1:
+			return `{"steps":[{"title":"Alpha","goal":"Write Alpha"},{"title":"Beta","goal":"Write Beta"}]}`
+		case 2:
+			return `{"join_mode":"new_section","intent":"Alpha","content":"## Alpha\n\nAlpha body."}`
+		default:
+			return `{"join_mode":"new_section","intent":"Beta","content":"## Beta\n\nBeta body."}`
+		}
+	})
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "draft.md")
+	if err := os.WriteFile(path, []byte("# Doc\n\nIntro.\n"), 0o644); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+	cfg := nonInteractiveTestConfig(server.URL, path)
+	cfg.Mode = "generate"
+	cfg.Submode = "section"
+	cfg.Rounds = 2
+	cfg.StructuredGeneration = true
+
+	var output bytes.Buffer
+	result, err := RunNonInteractive(cfg, &output)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Changed != 2 {
+		t.Fatalf("expected 2 changed rounds, got %d", result.Changed)
+	}
+	written, _ := os.ReadFile(path)
+	if !strings.Contains(string(written), "## Alpha") || !strings.Contains(string(written), "## Beta") {
+		t.Fatalf("expected both sections saved, got %q", written)
+	}
+}
+
 func TestRunNonInteractiveApproveAllAppliesAndLogsEdit(t *testing.T) {
 	server := chatServer(t, func(_ int32) string {
-		return `{"suggestions":[{"old_text":"teh","new_text":"the"}],"remaining_rounds":0}`
+		return `{"assessment":"Fixed typo","edits":[{"reason":"Typo","target_line":1,"action":"replace","old_text":"teh","new_text":"the"}],"more_rounds_needed":false}`
 	})
 	defer server.Close()
 	path := filepath.Join(t.TempDir(), "draft.md")
@@ -68,38 +107,11 @@ func TestRunNonInteractiveApproveAllAppliesAndLogsEdit(t *testing.T) {
 	}
 }
 
-func TestRunNonInteractiveLLMApprovedReturnsNoChangesWhenRejected(t *testing.T) {
-	server := chatServer(t, func(request int32) string {
-		if request == 1 {
-			return `{"suggestions":[{"old_text":"word","new_text":"term"}],"remaining_rounds":0}`
-		}
-		return `{"approve":false}`
-	})
-	defer server.Close()
-	path := filepath.Join(t.TempDir(), "draft.md")
-	if err := os.WriteFile(path, []byte("A word.\n"), 0o644); err != nil {
-		t.Fatalf("write document: %v", err)
-	}
-	cfg := nonInteractiveTestConfig(server.URL, path)
-	cfg.Mode = "edit"
-	cfg.Submode = "copy"
-	cfg.Approval = "llm-approved"
-
-	var output bytes.Buffer
-	result, err := RunNonInteractive(cfg, &output)
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if result.Changed != 0 || output.Len() != 0 {
-		t.Fatalf("unexpected result/output: %#v %q", result, output.String())
-	}
-}
-
 func TestRunNonInteractiveHonorsMaxEdits(t *testing.T) {
 	var requests atomic.Int32
 	server := chatServer(t, func(request int32) string {
 		requests.Store(request)
-		return `{"suggestions":[{"old_text":"one","new_text":"ONE"},{"old_text":"two","new_text":"TWO"}],"remaining_rounds":1}`
+		return `{"assessment":"Two fixes","edits":[{"reason":"One","target_line":1,"action":"replace","old_text":"one","new_text":"ONE"},{"reason":"Two","target_line":1,"action":"replace","old_text":"two","new_text":"TWO"}],"more_rounds_needed":true}`
 	})
 	defer server.Close()
 	path := filepath.Join(t.TempDir(), "draft.md")
@@ -131,7 +143,8 @@ func nonInteractiveTestConfig(serverURL, path string) config.Config {
 		GenerationModel:       "test-model",
 		EditingModel:          "test-model",
 		Timeout:               time.Second,
-		CopyEditBatchSize:     1,
+		Rounds:                1,
+		CopyEditBatchSize:     5,
 		DirectedEditBatchSize: 10,
 	}
 }

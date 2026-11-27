@@ -1,2 +1,2 @@
-Correction for the previous suggestion:
+Previous response issue — please correct:
 {{.Feedback}}

@@ -79,7 +79,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitRuntime
 	}
 
-	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	if _, err := program.Run(); err != nil {
 		fmt.Fprintf(stderr, "runtime error: %v\n", err)
 		return exitRuntime

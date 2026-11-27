@@ -53,17 +53,19 @@ func TestRenderUsesTemplatesAndOverrides(t *testing.T) {
 	}
 
 	got, err := Render(ContinuePrompt, overrides, struct {
-		SectionLabel string
-		HasExcerpt   bool
+		HasDocument      bool
+		ScopeInstruction string
+		RoundLabel       string
 	}{
-		SectionLabel: "# Intro",
-		HasExcerpt:   true,
+		HasDocument:      true,
+		ScopeInstruction: "Write 1 paragraph.",
+		RoundLabel:       "Round 1 of 3",
 	})
 	if err != nil {
 		t.Fatalf("render continue prompt: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(got), "inside # intro") {
-		t.Fatalf("expected rendered section label, got %q", got)
+	if !strings.Contains(got, "Write 1 paragraph.") || !strings.Contains(got, "Round 1 of 3") {
+		t.Fatalf("expected rendered scope and round label, got %q", got)
 	}
 	if !strings.Contains(got, "Stay consistent with prior terminology.") {
 		t.Fatalf("expected appended override text, got %q", got)

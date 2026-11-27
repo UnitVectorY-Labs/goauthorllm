@@ -54,7 +54,7 @@ func TestStructuredChatSendsJsonSchemaAndReturnsContent(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "test-model", "test-key", time.Second, "goauthorllm/1.2.3")
-	content, err := client.StructuredChat(context.Background(), []Message{{Role: "user", Name: "instructions", Content: "fix this"}}, "edit_suggestion", map[string]any{
+	content, err := client.StructuredChat(context.Background(), []Message{{Role: "user", Content: "fix this"}}, "edit_suggestion", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"match":   map[string]any{"type": "string"},
