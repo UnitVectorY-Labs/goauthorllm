@@ -123,13 +123,17 @@ func TestUniversalCrossPlatformKeyboardNavigation(t *testing.T) {
 		t.Fatalf("Ctrl+N rounds = %d, want 3", m.gen.rounds)
 	}
 
-	// Tab twice moves Editor -> Prompt -> Controls Bar
-	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	// Prompt starts collapsed by default to maximize document space
+	if m.promptOpen {
+		t.Fatal("expected prompt to start collapsed by default")
+	}
+
+	// Tab when prompt is collapsed jumps straight Editor -> Controls Bar!
 	m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if m.writeFocus != writeFocusControls {
-		t.Fatalf("expected writeFocusControls, got %v", m.writeFocus)
+		t.Fatalf("expected writeFocusControls on Tab when prompt collapsed, got %v", m.writeFocus)
 	}
-	// In Controls Bar: '1' picks Sentence, '+' increments rounds, '?' opens Help!
+	// In Controls Bar: '1' picks Sentence, '+' increments rounds, 'p' opens Prompt!
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
 	if m.gen.scope != engine.ScopeSentence {
 		t.Fatalf("expected Sentence via '1' in controls bar, got %v", m.gen.scope)
@@ -137,6 +141,16 @@ func TestUniversalCrossPlatformKeyboardNavigation(t *testing.T) {
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
 	if m.gen.rounds != 4 {
 		t.Fatalf("expected rounds=4 via '+' in controls bar, got %d", m.gen.rounds)
+	}
+
+	// Ctrl+B opens and focuses Guidance Prompt, and Ctrl+B again collapses it
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	if !m.promptOpen || m.writeFocus != writeFocusPrompt {
+		t.Fatalf("expected Ctrl+B to open and focus prompt, open=%v focus=%v", m.promptOpen, m.writeFocus)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	if m.promptOpen || m.writeFocus != writeFocusEditor {
+		t.Fatalf("expected second Ctrl+B to collapse prompt and return to editor, open=%v focus=%v", m.promptOpen, m.writeFocus)
 	}
 
 	// Ctrl+P opens Command Menu from anywhere, and '?' inside menu opens Help!
@@ -297,20 +311,28 @@ func TestEditReviewAcceptSkipApproveRemainingAndUndo(t *testing.T) {
 	}
 }
 
-func TestCompactTerminalExpandsPromptOnTab(t *testing.T) {
+func TestCompactTerminalExpandsPromptOnCtrlB(t *testing.T) {
 	m, _ := newTestStudio(t, "# Small\n\nBody.\n")
 	m.Update(tea.WindowSizeMsg{Width: 64, Height: 18})
-	_ = m.View()
+	view := m.View()
+	if strings.Contains(view, "Guidance Prompt") {
+		t.Fatalf("expected prompt collapsed by default, got:\n%s", view)
+	}
 
 	if m.writeFocus != writeFocusEditor {
 		t.Fatalf("expected editor focused initially")
 	}
-	m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	view := m.View()
-	if m.writeFocus != writeFocusPrompt {
-		t.Fatalf("expected prompt focused on Tab")
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	view = m.View()
+	if !m.promptOpen || m.writeFocus != writeFocusPrompt {
+		t.Fatalf("expected prompt open & focused on Ctrl+B")
 	}
 	if !strings.Contains(view, "Guidance Prompt") {
 		t.Fatalf("expected expanded Guidance Prompt on small terminal, got:\n%s", view)
+	}
+	// Esc on empty prompt collapses it back cleanly
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.promptOpen || m.writeFocus != writeFocusEditor {
+		t.Fatalf("expected Esc on empty prompt to collapse and return to editor")
 	}
 }

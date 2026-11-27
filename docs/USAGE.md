@@ -27,9 +27,9 @@ goauthorllm draft.md
 1. **Write** — Markdown document editor paired with live generation controls:
    - **Length pills (`^L`)**: `Sentence`, `Paragraph`, `Section`, `Free`
    - **Rounds selector (`^N`)**: `×1` to `×20`. Multi-round runs automatically create a structured outline plan first so each round produces distinct, non-repetitive content.
-   - **Controls Bar focus (`Tab`)**: Cycles `Document → Guidance Prompt → Controls Bar`. When the Controls Bar is focused, tap `1`–`4` to pick Length directly, `-`/`+` to fine-tune Rounds, `Enter` to Generate, or `e`/`c`/`f`/`m`/`?` to jump to Edit, Config, Files, Meta, or Help.
+   - **Collapsible Guidance Prompt (`^B`)**: Starts collapsed by default so your document gets the full height. Press **`^B`** (or click **`▸ Prompt ^B`**, or press `p` in the Controls Bar) to open or hide it anytime; when hidden with text queued, the pill shows `▸ Prompt ● ^B`.
+   - **Controls Bar focus (`Tab`)**: Cycles `Document → (Guidance Prompt if open) → Controls Bar`. When the Controls Bar is focused, tap `1`–`4` to pick Length directly, `-`/`+` to fine-tune Rounds, `p` to toggle Prompt, `Enter` to Generate, or `e`/`c`/`f`/`m`/`?` to jump to Edit, Config, Files, Meta, or Help.
    - **Exact Mid-Stream Stop (`Esc`)**: Cancels streaming immediately and keeps the exact text visible on screen (buffered, unrevealed text is discarded). Stream pacing (`stream_chars_per_sec`) is configured universally in `.goauthorllm` via the **Config** tab.
-   - **Guidance Prompt (`Tab`)**: Optional guidance input (auto-expands on small/Termux screens), with per-file prompt history recall.
    - **+1 Round (`^R`)**: Immediately run one more round with the current length.
 2. **Edit** — Copy editing and custom directed editing:
    - Leave **Edit Instructions** blank to run copy editing using your `.goauthorllm` `copy_edit_rules`, or type custom instructions inline for targeted edits.
@@ -54,6 +54,7 @@ Every action works across **macOS, Windows, Linux, and Termux** without relying 
 | `^G` (`Ctrl+G`) | Generate content (Write) or start Edit review (Edit) |
 | `^L` (`Ctrl+L`) | Cycle generation length: `Sentence → Paragraph → Section → Free` (Write) |
 | `^N` (`Ctrl+N`) | Cycle generation rounds: `×1 → ×2 → ×3 → ×5` (Write) |
+| `^B` (`Ctrl+B`) | Toggle collapsible Guidance Prompt open / hidden (Write) |
 | `^R` (`Ctrl+R`) | Run `+1 Round` (Write), Re-scan (Edit), or Refresh (Files) |
 | `^X` (`Ctrl+X`) | Approve All edits (Edit) |
 | `y` / `n` / `a` / `u` | Accept / Skip / Approve Remaining / Undo (when in Diff view) |

@@ -81,7 +81,7 @@ func (m *Model) resizeInputs() {
 
 func (m *Model) shouldShowPromptBox() bool {
 	if m.isCompactHeight() {
-		return m.writeFocus == writeFocusPrompt
+		return m.promptOpen && m.writeFocus == writeFocusPrompt
 	}
 	return m.promptOpen
 }
@@ -217,23 +217,30 @@ func (m *Model) renderWriteView(fb *frameBuilder) string {
 		)
 	}
 
-	promptBtnLabel := "✎ Prompt"
+	promptBtnLabel := "▸ Prompt ^B"
+	if m.promptOpen {
+		promptBtnLabel = "▾ Prompt ^B"
+	}
 	if strings.TrimSpace(m.prompt.Value()) != "" {
-		promptBtnLabel = "✎ Prompt ●"
+		if m.promptOpen {
+			promptBtnLabel = "▾ Prompt ● ^B"
+		} else {
+			promptBtnLabel = "▸ Prompt ● ^B"
+		}
 	}
 	controls = append(controls, rowItem{
 		ID:      "toggle-prompt",
 		Index:   0,
-		Content: renderPill(promptBtnLabel, m.shouldShowPromptBox(), m.isHovered("toggle-prompt", 0)),
+		Content: renderPill(promptBtnLabel, m.promptOpen, m.isHovered("toggle-prompt", 0)),
 		Gap:     0,
 	})
 	fb.addRow(controls, m.width)
 
-	// On very compact terminals, give Guidance Prompt full height when focused.
-	if m.isCompactHeight() && m.writeFocus == writeFocusPrompt {
+	// On very compact terminals, give Guidance Prompt full height when open & focused.
+	if m.isCompactHeight() && m.shouldShowPromptBox() {
 		promptBox := renderBox(
 			"Guidance Prompt (optional)",
-			"Enter: generate · Tab: controls · Esc: editor",
+			"Enter: generate · ^J: newline · ^B: hide · Esc: editor",
 			m.prompt.View(),
 			m.width,
 			true,
@@ -242,7 +249,7 @@ func (m *Model) renderWriteView(fb *frameBuilder) string {
 		r := fb.addBlock(promptBox)
 		fb.hits.setPane("prompt", r)
 		fb.hits.add("pane-prompt", 0, r)
-		return "Enter Generate · ^J Newline · Tab Controls · ^L Length · ^N Rounds · ^T View · ^P Menu/Help"
+		return "Enter Generate · ^J Newline · ^B Hide Prompt · Tab Controls · ^L Length · ^N Rounds · ^P Menu"
 	}
 
 	docTitle := "Document"
@@ -263,14 +270,14 @@ func (m *Model) renderWriteView(fb *frameBuilder) string {
 		}
 		docTitle = fmt.Sprintf("Document · %s %s%s%s· Esc stops", m.spin.View(), roundTxt, intentTxt, speedTxt)
 	}
-	docMeta := fmt.Sprintf("%d words · ^Z undo · ^K trim end · Tab prompt", m.wordCount())
+	docMeta := fmt.Sprintf("%d words · ^Z undo · ^K trim end · ^B prompt", m.wordCount())
 	docBox := renderBox(docTitle, docMeta, m.editor.View(), m.width, m.writeFocus == writeFocusEditor, m.hoverID == "pane-editor")
 	edRect := fb.addBlock(docBox)
 	fb.hits.setPane("editor", edRect)
 	fb.hits.add("pane-editor", 0, edRect)
 
 	if m.shouldShowPromptBox() {
-		promptMeta := "Enter: generate · ^J: newline · Tab: controls"
+		promptMeta := "Enter: generate · ^J: newline · ^B: hide · Tab: controls"
 		promptBox := renderBox("Guidance Prompt (optional)", promptMeta, m.prompt.View(), m.width, m.writeFocus == writeFocusPrompt, m.hoverID == "pane-prompt")
 		prRect := fb.addBlock(promptBox)
 		fb.hits.setPane("prompt", prRect)
@@ -278,12 +285,12 @@ func (m *Model) renderWriteView(fb *frameBuilder) string {
 	}
 
 	if ctrlFocused {
-		return "1-4 Length · -/+ Rounds · Enter Generate · e Edit · c Config · f Files · m Meta · ? Help · Tab Editor"
+		return "1-4 Length · -/+ Rounds · p Prompt · Enter Generate · e Edit · c Config · f Files · ? Help · Tab Editor"
 	}
 	if m.writeFocus == writeFocusPrompt {
-		return "Enter Generate · ^J Newline · Tab Controls · ^L Length · ^N Rounds · ^T View · ^P Menu/Help"
+		return "Enter Generate · ^J Newline · ^B Hide Prompt · Tab Controls · ^L Length · ^N Rounds · ^P Menu"
 	}
-	return "^G Generate · ^L Length · ^N Rounds · ^R +1 Round · Tab Prompt/Controls · ^T View · ^P Menu/Help"
+	return "^G Generate · ^L Length · ^N Rounds · ^B Prompt · ^R +1 Round · Tab Controls · ^T View · ^P Menu"
 }
 
 func (m *Model) renderEditView(fb *frameBuilder) string {
@@ -619,9 +626,10 @@ func (m *Model) renderHelpOverlay(fb *frameBuilder) {
 		"  ^G  (Ctrl+G)         Generate content with active Length & Rounds",
 		"  ^L  (Ctrl+L)         Cycle Length: Sentence → Paragraph → Section → Free",
 		"  ^N  (Ctrl+N)         Cycle Rounds: ×1 → ×2 → ×3 → ×5 (multi-round auto-plans)",
+		"  ^B  (Ctrl+B)         Toggle collapsible Guidance Prompt open / collapsed",
 		"  ^R  (Ctrl+R)         Generate +1 more round seamlessly",
-		"  Tab                  Cycle focus: Document → Guidance Prompt → Controls Bar",
-		"  Controls Bar keys    1-4 pick Length · -/+ set Rounds (1..20) · Enter Go · e/c/f/m/?",
+		"  Tab                  Cycle focus: Document → (Prompt if open) → Controls Bar",
+		"  Controls Bar keys    1-4 Length · -/+ Rounds · p Prompt · Enter Go · e/c/f/m/?",
 		"  Enter / ^J (Prompt)  Generate / Insert newline inside Guidance Prompt",
 		"  ^Z / ^K (Editor)     Undo last change / Delete from cursor to end",
 		"  Esc (streaming)      Stop at exact visible character (discards unrevealed buffer)",

@@ -55,6 +55,21 @@ func (m *Model) menuEntries() []menuEntry {
 	if m.doc != nil {
 		items = append(items,
 			menuEntry{
+				Key:   "b",
+				Label: func() string {
+					if m.promptOpen {
+						return "Hide Guidance Prompt"
+					}
+					return "Show Guidance Prompt"
+				}(),
+				Hint: "^B toggles",
+				Run: func(m *Model) tea.Cmd {
+					m.view = viewWrite
+					m.togglePromptBox()
+					return nil
+				},
+			},
+			menuEntry{
 				Key:   "m",
 				Label: "Document Instructions (Front Matter)",
 				Hint:  "YAML system_message for this file",

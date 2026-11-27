@@ -211,7 +211,7 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 		lastEditAt:  time.Now(),
 		statusText:  "Ready",
 		statusLevel: "info",
-		promptOpen:  true,
+		promptOpen:  false,
 		gen: generationState{
 			scope:  engine.NormalizeScope(cfg.DefaultScope),
 			rounds: max(1, cfg.Rounds),

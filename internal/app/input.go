@@ -2,6 +2,7 @@ package app
 
 import (
 	"path/filepath"
+	"strings"
 	"time"
 
 	ta "github.com/charmbracelet/bubbles/textarea"
@@ -46,7 +47,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			return true, nil
 		}
 		if m.view == viewWrite && m.writeFocus != writeFocusEditor {
+			if m.writeFocus == writeFocusPrompt && strings.TrimSpace(m.prompt.Value()) == "" {
+				m.promptOpen = false
+			}
 			m.writeFocus = writeFocusEditor
+			m.resizeInputs()
 			m.syncFocus()
 			return true, nil
 		}
@@ -241,14 +246,39 @@ func (m *Model) handleOverlayKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return false, nil
 }
 
+func (m *Model) togglePromptBox() {
+	m.promptOpen = !m.promptOpen
+	if m.promptOpen {
+		m.writeFocus = writeFocusPrompt
+		m.setStatus("Guidance prompt shown (^B hides)", "info")
+	} else {
+		if m.writeFocus == writeFocusPrompt {
+			m.writeFocus = writeFocusEditor
+		}
+		if strings.TrimSpace(m.prompt.Value()) != "" {
+			m.setStatus("Guidance prompt hidden (text kept · ^B reopens)", "info")
+		} else {
+			m.setStatus("Guidance prompt hidden (^B opens)", "info")
+		}
+	}
+	m.resizeInputs()
+	m.syncFocus()
+}
+
 func (m *Model) handleWriteKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	k := msg.String()
 	switch k {
+	case "ctrl+b":
+		m.togglePromptBox()
+		return true, nil
 	case "tab":
 		switch m.writeFocus {
 		case writeFocusEditor:
-			m.promptOpen = true
-			m.writeFocus = writeFocusPrompt
+			if m.promptOpen {
+				m.writeFocus = writeFocusPrompt
+			} else {
+				m.writeFocus = writeFocusControls
+			}
 		case writeFocusPrompt:
 			m.writeFocus = writeFocusControls
 		default:
@@ -262,8 +292,11 @@ func (m *Model) handleWriteKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		case writeFocusEditor:
 			m.writeFocus = writeFocusControls
 		case writeFocusControls:
-			m.promptOpen = true
-			m.writeFocus = writeFocusPrompt
+			if m.promptOpen {
+				m.writeFocus = writeFocusPrompt
+			} else {
+				m.writeFocus = writeFocusEditor
+			}
 		default:
 			m.writeFocus = writeFocusEditor
 		}
@@ -311,6 +344,8 @@ func (m *Model) handleWriteKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			m.adjustRounds(-1)
 		case "+", "=":
 			m.adjustRounds(1)
+		case "p":
+			m.togglePromptBox()
 		case "enter", "g":
 			return true, m.startGeneration(0)
 		case "r":
@@ -790,22 +825,7 @@ func (m *Model) dispatchClick(t hitTarget) tea.Cmd {
 	case "undo":
 		m.undoBody()
 	case "toggle-prompt":
-		if m.isCompactHeight() {
-			if m.writeFocus == writeFocusPrompt {
-				m.writeFocus = writeFocusEditor
-			} else {
-				m.writeFocus = writeFocusPrompt
-			}
-		} else {
-			m.promptOpen = !m.promptOpen
-			if m.promptOpen {
-				m.writeFocus = writeFocusPrompt
-			} else {
-				m.writeFocus = writeFocusEditor
-			}
-		}
-		m.resizeInputs()
-		m.syncFocus()
+		m.togglePromptBox()
 	case "pane-editor":
 		if m.view == viewWrite {
 			m.writeFocus = writeFocusEditor
