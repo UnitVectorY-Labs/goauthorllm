@@ -290,9 +290,9 @@ func (m *Model) renderDiffBody() string {
 		lines = append(lines,
 			styleMuted.Render("No active edit suggestion."),
 			"",
-			styleDim.Render("• Leave instructions blank and click [Review Edits] (or Ctrl+G) for copy editing."),
+			styleDim.Render("• Leave instructions blank and press ^G (or click Review) for copy editing."),
 			styleDim.Render("• Type custom instructions above for targeted rewrites, renames, or removals."),
-			styleDim.Render("• Click [Approve All] (or Alt+A) to auto-apply all validated edits."),
+			styleDim.Render("• Press ^X (or click Approve All) to auto-apply all validated edits."),
 		)
 		if strings.TrimSpace(m.cfg.CopyEditRules) != "" {
 			lines = append(lines, "", styleDim.Render("Active .goauthorllm copy_edit_rules: "+truncate(strings.ReplaceAll(m.cfg.CopyEditRules, "\n", " "), 90)))

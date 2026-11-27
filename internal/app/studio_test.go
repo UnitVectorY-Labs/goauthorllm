@@ -65,7 +65,7 @@ func clickTarget(t *testing.T, m *Model, id string, index int) {
 	t.Fatalf("clickable target %q (index %d) not found in rendered frame", id, index)
 }
 
-func TestStudioMouseClickSwitchesTabsScopesRoundsAndSpeed(t *testing.T) {
+func TestStudioMouseClickSwitchesTabsScopesAndRounds(t *testing.T) {
 	m, _ := newTestStudio(t, "# Hello\n\nWorld.\n")
 
 	if m.view != viewWrite {
@@ -85,10 +85,11 @@ func TestStudioMouseClickSwitchesTabsScopesRoundsAndSpeed(t *testing.T) {
 		t.Fatalf("rounds = %d, want 3", m.gen.rounds)
 	}
 
-	// Click Speed pill -> switches from Max (0) to first preset (35)
-	clickTarget(t, m, "speed", 0)
-	if m.cfg.StreamSpeed != speedPresets[1] {
-		t.Fatalf("stream speed = %d, want %d", m.cfg.StreamSpeed, speedPresets[1])
+	// Verify no on-the-fly speed pill clutters the Write controls bar
+	for _, target := range m.hits.targets {
+		if target.ID == "speed" {
+			t.Fatal("speed pill should live in Config, not the Write bar")
+		}
 	}
 
 	// Click Edit tab, Config tab, Files tab
@@ -103,6 +104,63 @@ func TestStudioMouseClickSwitchesTabsScopesRoundsAndSpeed(t *testing.T) {
 	clickTarget(t, m, "tab", int(viewFiles))
 	if m.view != viewFiles {
 		t.Fatalf("expected viewFiles, got %v", m.view)
+	}
+}
+
+func TestUniversalCrossPlatformKeyboardNavigation(t *testing.T) {
+	m, _ := newTestStudio(t, "# Hello\n\nWorld.\n")
+
+	// Ctrl+L cycles Length: Paragraph -> Section -> Free -> Sentence
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	if m.gen.scope != engine.ScopeSection {
+		t.Fatalf("Ctrl+L scope = %v, want section", m.gen.scope)
+	}
+
+	// Ctrl+N cycles Rounds: 1 -> 2 -> 3
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if m.gen.rounds != 3 {
+		t.Fatalf("Ctrl+N rounds = %d, want 3", m.gen.rounds)
+	}
+
+	// Tab twice moves Editor -> Prompt -> Controls Bar
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if m.writeFocus != writeFocusControls {
+		t.Fatalf("expected writeFocusControls, got %v", m.writeFocus)
+	}
+	// In Controls Bar: '1' picks Sentence, '+' increments rounds, '?' opens Help!
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	if m.gen.scope != engine.ScopeSentence {
+		t.Fatalf("expected Sentence via '1' in controls bar, got %v", m.gen.scope)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if m.gen.rounds != 4 {
+		t.Fatalf("expected rounds=4 via '+' in controls bar, got %d", m.gen.rounds)
+	}
+
+	// Ctrl+P opens Command Menu from anywhere, and '?' inside menu opens Help!
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if m.overlay != overlayMenu {
+		t.Fatalf("expected overlayMenu on Ctrl+P, got %v", m.overlay)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if m.overlay != overlayHelp {
+		t.Fatalf("expected overlayHelp via '?' in menu, got %v", m.overlay)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.overlay != overlayNone {
+		t.Fatalf("expected Esc to close help, got %v", m.overlay)
+	}
+
+	// Ctrl+T cycles views: Write -> Edit -> Config -> Files
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	if m.view != viewEdit {
+		t.Fatalf("expected viewEdit on Ctrl+T, got %v", m.view)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	if m.view != viewConfig {
+		t.Fatalf("expected viewConfig on Ctrl+T, got %v", m.view)
 	}
 }
 

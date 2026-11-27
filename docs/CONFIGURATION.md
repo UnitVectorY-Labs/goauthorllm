@@ -6,7 +6,7 @@ nav_order: 4
 
 # Configuration
 
-`goauthorllm` reads an optional `.goauthorllm` YAML file from the working directory — and you can now edit, validate, save, and hot-reload `.goauthorllm` directly inside the application from the **Config (`Alt+3`)** tab.
+`goauthorllm` reads an optional `.goauthorllm` YAML file from the working directory — and you can edit, validate, save, and hot-reload `.goauthorllm` directly inside the application from the **Config** tab (`^T` or `^P` → `3`).
 
 ## Precedence
 
@@ -19,12 +19,12 @@ Configurable values resolve in this order:
 
 ## In-App Config Editor
 
-Press **`Alt+3`** (or click **`3 Config`** in the top bar) at any time to edit `.goauthorllm`:
+Switch to **Config** (`^T` to cycle views, or `^P` → `3`) at any time to edit `.goauthorllm`:
 
-- **Form view** — edit endpoint URL, default/generation/editing models, stream speed (`chars/sec`), default generation scope, structured streaming toggle, edit batch sizes, project writing `rules`, and default `copy_edit_rules`.
-- **Fetch Models (`Alt+F` / `Pick…`)** — queries `<base_url>/models` live and lets you filter and pick any available model.
-- **Raw YAML view (`Alt+Y`)** — inspect or edit `.goauthorllm` directly, including advanced prompt overrides.
-- **Save & Apply (`Ctrl+S`)** — writes `.goauthorllm` and reloads the active LLM clients immediately without restarting.
+- **Form view** — edit endpoint URL, default/generation/editing models, universal stream speed (`stream_chars_per_sec`), default generation length, structured streaming toggle, edit batch sizes, project writing `rules`, and default `copy_edit_rules`.
+- **Fetch Models (`^F` / `Pick…`)** — queries `<base_url>/models` live and lets you filter and pick any available model.
+- **Raw YAML view (`^Y`)** — inspect or edit `.goauthorllm` directly, including advanced prompt overrides.
+- **Save & Apply (`^S`)** — writes `.goauthorllm` and reloads the active LLM clients immediately without restarting.
 
 ## Supported Keys
 

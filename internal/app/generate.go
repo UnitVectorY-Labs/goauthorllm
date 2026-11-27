@@ -13,8 +13,8 @@ import (
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/llm"
 )
 
-// speedPresets lets users click or tap a key to cycle reading pace quickly.
-var speedPresets = []int{0, 35, 65, 110, 180}
+// roundsPresets lets Ctrl+N step quickly through common multi-round counts.
+var roundsPresets = []int{1, 2, 3, 5}
 
 type planDoneMsg struct {
 	runID int
@@ -44,7 +44,7 @@ func (m *Model) cycleScope(delta int) {
 		}
 	}
 	m.gen.scope = scopes[(idx+delta+len(scopes))%len(scopes)]
-	m.setStatus("Generation scope: "+m.gen.scope.Label(), "accent")
+	m.setStatus("Generation length: "+m.gen.scope.Label()+" (^L cycles)", "accent")
 }
 
 func (m *Model) adjustRounds(delta int) {
@@ -52,26 +52,16 @@ func (m *Model) adjustRounds(delta int) {
 	m.setStatus(fmt.Sprintf("Generation rounds: ×%d", m.gen.rounds), "accent")
 }
 
-func (m *Model) cycleStreamSpeed(delta int) {
-	idx := 0
-	found := false
-	for i, v := range speedPresets {
-		if v == m.cfg.StreamSpeed {
-			idx = i
-			found = true
-			break
+func (m *Model) cycleRoundsPreset() {
+	for i, v := range roundsPresets {
+		if v == m.gen.rounds {
+			m.gen.rounds = roundsPresets[(i+1)%len(roundsPresets)]
+			m.setStatus(fmt.Sprintf("Generation rounds: ×%d (^N cycles · Tab controls for -/+)", m.gen.rounds), "accent")
+			return
 		}
 	}
-	if !found {
-		if delta > 0 {
-			m.cfg.StreamSpeed = speedPresets[0]
-		} else {
-			m.cfg.StreamSpeed = speedPresets[len(speedPresets)-1]
-		}
-	} else {
-		m.cfg.StreamSpeed = speedPresets[(idx+delta+len(speedPresets))%len(speedPresets)]
-	}
-	m.setStatus("Stream speed: "+formatSpeedLabel(m.cfg.StreamSpeed), "accent")
+	m.gen.rounds = 1
+	m.setStatus("Generation rounds: ×1 (^N cycles)", "accent")
 }
 
 // startGeneration begins a 1-round or N-round generation run.

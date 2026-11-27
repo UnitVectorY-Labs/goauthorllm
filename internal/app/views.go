@@ -22,7 +22,7 @@ func (m *Model) resizeInputs() {
 
 	// Overlays
 	m.frontMatter.SetWidth(innerW)
-	m.frontMatter.SetHeight(max(5, m.height-9))
+	m.frontMatter.SetHeight(max(5, m.height-10))
 	m.modelPickerFilter.Width = max(16, innerW-4)
 
 	// Files
@@ -37,32 +37,35 @@ func (m *Model) resizeInputs() {
 	m.cfgUI.streamSpeed.Width = max(12, fieldW)
 	m.cfgUI.copyBatch.Width = max(12, fieldW)
 	m.cfgUI.directedBatch.Width = max(12, fieldW)
-	ruleH := clampInt((m.height-20)/2, 2, 5)
+	ruleH := clampInt((m.height-21)/2, 2, 5)
 	m.cfgUI.rules.SetWidth(innerW)
 	m.cfgUI.rules.SetHeight(ruleH)
 	m.cfgUI.copyEditRules.SetWidth(innerW)
 	m.cfgUI.copyEditRules.SetHeight(ruleH)
 	m.cfgUI.rawYAML.SetWidth(innerW)
-	m.cfgUI.rawYAML.SetHeight(max(6, m.height-10))
+	m.cfgUI.rawYAML.SetHeight(max(6, m.height-11))
 
-	// Write view sizing: header (2) + controls (1-2) + status (1) + borders
+	// Write view sizing: header (2) + controls (1-2) + footer keybar & status (2) + box borders
 	promptVisible := m.shouldShowPromptBox()
+	controlsExtra := 0
+	if m.width < 92 {
+		controlsExtra = 1 // controls bar wraps to 2 lines on narrow terminals
+	}
 	if m.isCompactHeight() && m.writeFocus == writeFocusPrompt && promptVisible {
-		// On short terminals, give the prompt full height when focused so typing is comfortable!
 		m.prompt.SetWidth(innerW)
-		m.prompt.SetHeight(max(4, m.height-10))
+		m.prompt.SetHeight(max(4, m.height-11-controlsExtra))
 		m.editor.SetWidth(innerW)
-		m.editor.SetHeight(max(4, m.height-10))
+		m.editor.SetHeight(max(4, m.height-11-controlsExtra))
 	} else if promptVisible {
 		promptH := clampInt(m.height/6, 3, 5)
-		editorH := max(4, m.height-12-promptH)
+		editorH := max(4, m.height-13-controlsExtra-promptH)
 		m.editor.SetWidth(innerW)
 		m.editor.SetHeight(editorH)
 		m.prompt.SetWidth(innerW)
 		m.prompt.SetHeight(promptH)
 	} else {
 		m.editor.SetWidth(innerW)
-		m.editor.SetHeight(max(4, m.height-9))
+		m.editor.SetHeight(max(4, m.height-10-controlsExtra))
 		m.prompt.SetWidth(innerW)
 		m.prompt.SetHeight(4)
 	}
@@ -93,6 +96,8 @@ func (m *Model) View() string {
 	fb := newFrameBuilder()
 
 	switch m.overlay {
+	case overlayMenu:
+		m.renderMenuOverlay(fb)
 	case overlayMeta:
 		m.renderMetaOverlay(fb)
 	case overlayHelp:
@@ -103,17 +108,18 @@ func (m *Model) View() string {
 		m.renderModelPickerOverlay(fb)
 	default:
 		m.renderHeaderBar(fb)
+		var keybar string
 		switch m.view {
 		case viewWrite:
-			m.renderWriteView(fb)
+			keybar = m.renderWriteView(fb)
 		case viewEdit:
-			m.renderEditView(fb)
+			keybar = m.renderEditView(fb)
 		case viewConfig:
-			m.renderConfigView(fb)
+			keybar = m.renderConfigView(fb)
 		case viewFiles:
-			m.renderFilesView(fb)
+			keybar = m.renderFilesView(fb)
 		}
-		m.renderStatusFooter(fb)
+		m.renderFooter(fb, keybar)
 	}
 
 	m.hits = fb.hits
@@ -138,11 +144,12 @@ func (m *Model) isHovered(id string, idx int) bool {
 
 func (m *Model) renderHeaderBar(fb *frameBuilder) {
 	items := []rowItem{
-		{Content: styleBrand.Render("◆ goauthorllm"), Gap: 2},
-		{ID: "tab", Index: int(viewWrite), Content: renderTab("1 Write", m.view == viewWrite, m.isHovered("tab", int(viewWrite))), Gap: 1},
-		{ID: "tab", Index: int(viewEdit), Content: renderTab("2 Edit", m.view == viewEdit, m.isHovered("tab", int(viewEdit))), Gap: 1},
-		{ID: "tab", Index: int(viewConfig), Content: renderTab("3 Config", m.view == viewConfig, m.isHovered("tab", int(viewConfig))), Gap: 1},
-		{ID: "tab", Index: int(viewFiles), Content: renderTab("4 Files", m.view == viewFiles, m.isHovered("tab", int(viewFiles))), Gap: 2},
+		{Content: styleBrand.Render("◆ goauthorllm"), Gap: 1},
+		{ID: "tab", Index: int(viewWrite), Content: renderTab("Write", m.view == viewWrite, m.isHovered("tab", int(viewWrite))), Gap: 1},
+		{ID: "tab", Index: int(viewEdit), Content: renderTab("Edit", m.view == viewEdit, m.isHovered("tab", int(viewEdit))), Gap: 1},
+		{ID: "tab", Index: int(viewConfig), Content: renderTab("Config", m.view == viewConfig, m.isHovered("tab", int(viewConfig))), Gap: 1},
+		{ID: "tab", Index: int(viewFiles), Content: renderTab("Files", m.view == viewFiles, m.isHovered("tab", int(viewFiles))), Gap: 1},
+		{Content: styleDim.Render("[^T]"), Gap: 1},
 	}
 
 	if m.doc != nil {
@@ -153,37 +160,47 @@ func (m *Model) renderHeaderBar(fb *frameBuilder) {
 		} else {
 			items = append(items, rowItem{ID: "save", Index: 0, Content: renderBadge("saved", colorGreenDark, colorGreenSoft), Gap: 1})
 		}
-		items = append(items, rowItem{ID: "meta", Index: 0, Content: renderSecondaryBtn("Meta", m.isHovered("meta", 0)), Gap: 1})
 	}
 	items = append(items,
-		rowItem{ID: "help", Index: 0, Content: renderSecondaryBtn("?", m.isHovered("help", 0)), Gap: 1},
-		rowItem{ID: "quit", Index: 0, Content: renderSecondaryBtn("Quit", m.isHovered("quit", 0)), Gap: 0},
+		rowItem{ID: "menu", Index: 0, Content: renderSecondaryBtn("Menu ^P", m.isHovered("menu", 0)), Gap: 1},
+		rowItem{ID: "quit", Index: 0, Content: renderSecondaryBtn("Quit ^Q", m.isHovered("quit", 0)), Gap: 0},
 	)
 	fb.addRow(items, m.width)
 
-	// Thin orange accent divider line.
 	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colorOrangeDeep)).Render(strings.Repeat("─", max(1, m.width)))
 	fb.addBlock(divider)
 }
 
-func (m *Model) renderWriteView(fb *frameBuilder) {
-	// Control strip: Scope pills + Rounds + Speed + Generate/Stop + Prompt toggle
+func (m *Model) renderWriteView(fb *frameBuilder) string {
+	// Control strip: focused clearly with orange highlight when Tab reaches Controls Bar!
+	ctrlFocused := m.writeFocus == writeFocusControls
+	leadTag := styleDim.Render("^L:")
+	if ctrlFocused {
+		leadTag = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOrange)).Bold(true).Render("▸ Controls (1-4 len, -/+ rounds, Enter go):")
+	}
+
 	var controls []rowItem
+	controls = append(controls, rowItem{Content: leadTag, Gap: 1})
+
 	scopes := []engine.Scope{engine.ScopeSentence, engine.ScopeParagraph, engine.ScopeSection, engine.ScopeFree}
 	for i, sc := range scopes {
+		label := sc.Label()
+		if ctrlFocused {
+			label = fmt.Sprintf("%d %s", i+1, sc.Label())
+		}
 		controls = append(controls, rowItem{
 			ID:      "scope",
 			Index:   i,
-			Content: renderPill(sc.Label(), m.gen.scope == sc, m.isHovered("scope", i)),
+			Content: renderPill(label, m.gen.scope == sc, m.isHovered("scope", i)),
 			Gap:     1,
 		})
 	}
 
 	controls = append(controls,
+		rowItem{Content: styleDim.Render("^N:"), Gap: 0},
 		rowItem{ID: "rounds-dec", Index: 0, Content: renderSecondaryBtn("−", m.isHovered("rounds-dec", 0)), Gap: 0},
 		rowItem{ID: "rounds-inc", Index: 0, Content: renderPill(fmt.Sprintf("×%d", m.gen.rounds), m.gen.rounds > 1, m.isHovered("rounds-inc", 0)), Gap: 0},
 		rowItem{ID: "rounds-inc", Index: 1, Content: renderSecondaryBtn("+", m.isHovered("rounds-inc", 1)), Gap: 1},
-		rowItem{ID: "speed", Index: 0, Content: renderPill("Speed: "+formatSpeedLabel(m.cfg.StreamSpeed), m.cfg.StreamSpeed > 0, m.isHovered("speed", 0)), Gap: 1},
 	)
 
 	if m.gen.active || m.gen.planning {
@@ -195,9 +212,8 @@ func (m *Model) renderWriteView(fb *frameBuilder) {
 		})
 	} else {
 		controls = append(controls,
-			rowItem{ID: "generate", Index: 0, Content: renderPrimaryBtn("▶ Generate [Ctrl+G]", m.isHovered("generate", 0)), Gap: 1},
-			rowItem{ID: "plus-one", Index: 0, Content: renderSecondaryBtn("+1 Round [Ctrl+R]", m.isHovered("plus-one", 0)), Gap: 1},
-			rowItem{ID: "undo", Index: 0, Content: renderSecondaryBtn("↩ Undo", m.isHovered("undo", 0)), Gap: 1},
+			rowItem{ID: "generate", Index: 0, Content: renderPrimaryBtn("▶ Generate ^G", m.isHovered("generate", 0)), Gap: 1},
+			rowItem{ID: "plus-one", Index: 0, Content: renderSecondaryBtn("+1 ^R", m.isHovered("plus-one", 0)), Gap: 1},
 		)
 	}
 
@@ -213,11 +229,11 @@ func (m *Model) renderWriteView(fb *frameBuilder) {
 	})
 	fb.addRow(controls, m.width)
 
-	// Main Document or Full-height Prompt on very compact terminals
+	// On very compact terminals, give Guidance Prompt full height when focused.
 	if m.isCompactHeight() && m.writeFocus == writeFocusPrompt {
 		promptBox := renderBox(
-			"Guidance Prompt",
-			"Enter: generate · Alt+Enter: newline · Alt+↑/↓: history · Tab: document",
+			"Guidance Prompt (optional)",
+			"Enter: generate · Tab: controls · Esc: editor",
 			m.prompt.View(),
 			m.width,
 			true,
@@ -226,7 +242,7 @@ func (m *Model) renderWriteView(fb *frameBuilder) {
 		r := fb.addBlock(promptBox)
 		fb.hits.setPane("prompt", r)
 		fb.hits.add("pane-prompt", 0, r)
-		return
+		return "Enter Generate · ^J Newline · Tab Controls · ^L Length · ^N Rounds · ^T View · ^P Menu/Help"
 	}
 
 	docTitle := "Document"
@@ -241,33 +257,43 @@ func (m *Model) renderWriteView(fb *frameBuilder) {
 		if m.gen.currentIntent != "" {
 			intentTxt = "— " + truncate(m.gen.currentIntent, 34) + " "
 		}
-		docTitle = fmt.Sprintf("Document · %s %s%s(%s)", m.spin.View(), roundTxt, intentTxt, formatSpeedLabel(m.cfg.StreamSpeed))
+		speedTxt := ""
+		if m.cfg.StreamSpeed > 0 {
+			speedTxt = fmt.Sprintf("(%s) ", formatSpeedLabel(m.cfg.StreamSpeed))
+		}
+		docTitle = fmt.Sprintf("Document · %s %s%s%s· Esc stops", m.spin.View(), roundTxt, intentTxt, speedTxt)
 	}
-	docMeta := fmt.Sprintf("%d words · Ctrl+Z undo · Alt+K trim end · Tab prompt", m.wordCount())
+	docMeta := fmt.Sprintf("%d words · ^Z undo · ^K trim end · Tab prompt", m.wordCount())
 	docBox := renderBox(docTitle, docMeta, m.editor.View(), m.width, m.writeFocus == writeFocusEditor, m.hoverID == "pane-editor")
 	edRect := fb.addBlock(docBox)
 	fb.hits.setPane("editor", edRect)
 	fb.hits.add("pane-editor", 0, edRect)
 
 	if m.shouldShowPromptBox() {
-		promptMeta := "Enter: generate · Alt+Enter: newline · Alt+↑/↓: history · Tab: editor"
+		promptMeta := "Enter: generate · ^J: newline · Tab: controls"
 		promptBox := renderBox("Guidance Prompt (optional)", promptMeta, m.prompt.View(), m.width, m.writeFocus == writeFocusPrompt, m.hoverID == "pane-prompt")
 		prRect := fb.addBlock(promptBox)
 		fb.hits.setPane("prompt", prRect)
 		fb.hits.add("pane-prompt", 0, prRect)
 	}
+
+	if ctrlFocused {
+		return "1-4 Length · -/+ Rounds · Enter Generate · e Edit · c Config · f Files · m Meta · ? Help · Tab Editor"
+	}
+	if m.writeFocus == writeFocusPrompt {
+		return "Enter Generate · ^J Newline · Tab Controls · ^L Length · ^N Rounds · ^T View · ^P Menu/Help"
+	}
+	return "^G Generate · ^L Length · ^N Rounds · ^R +1 Round · Tab Prompt/Controls · ^T View · ^P Menu/Help"
 }
 
-func (m *Model) renderEditView(fb *frameBuilder) {
-	// Instructions input box right at the top — custom copy editing is effortless!
-	instrTitle := "Edit Instructions (leave blank for copy edit using .goauthorllm rules)"
-	instrMeta := "Enter: Review · Alt+Enter: newline · Alt+↑/↓: history"
+func (m *Model) renderEditView(fb *frameBuilder) string {
+	instrTitle := "Edit Instructions (blank = copy edit using .goauthorllm rules)"
+	instrMeta := "Enter: Review · ^J: newline · Tab: diff"
 	instrBox := renderBox(instrTitle, instrMeta, m.edit.instructions.View(), m.width, m.edit.focus == editFocusInstructions, m.hoverID == "pane-edit-instr")
 	ir := fb.addBlock(instrBox)
 	fb.hits.setPane("edit-instr", ir)
 	fb.hits.add("pane-edit-instr", 0, ir)
 
-	// Sub-tabs + primary run controls
 	var bar []rowItem
 	bar = append(bar,
 		rowItem{ID: "edit-tab", Index: int(editTabDiff), Content: renderPill("Diff", m.edit.subTab == editTabDiff, m.isHovered("edit-tab", int(editTabDiff))), Gap: 1},
@@ -279,8 +305,8 @@ func (m *Model) renderEditView(fb *frameBuilder) {
 		bar = append(bar, rowItem{ID: "stop-edit", Index: 0, Content: renderDangerBtn("■ Stop [Esc]", m.isHovered("stop-edit", 0)), Gap: 1})
 	} else {
 		bar = append(bar,
-			rowItem{ID: "edit-review", Index: 0, Content: renderPrimaryBtn("▶ Review Edits [Ctrl+G]", m.isHovered("edit-review", 0)), Gap: 1},
-			rowItem{ID: "edit-approve-all", Index: 0, Content: renderSecondaryBtn("⚡ Approve All [Alt+A]", m.isHovered("edit-approve-all", 0)), Gap: 1},
+			rowItem{ID: "edit-review", Index: 0, Content: renderPrimaryBtn("▶ Review ^G", m.isHovered("edit-review", 0)), Gap: 1},
+			rowItem{ID: "edit-approve-all", Index: 0, Content: renderSecondaryBtn("⚡ Approve All ^X", m.isHovered("edit-approve-all", 0)), Gap: 1},
 		)
 	}
 
@@ -288,7 +314,7 @@ func (m *Model) renderEditView(fb *frameBuilder) {
 		bar = append(bar,
 			rowItem{ID: "edit-accept", Index: 0, Content: renderSuccessBtn("✓ Accept [y]", m.isHovered("edit-accept", 0)), Gap: 1},
 			rowItem{ID: "edit-skip", Index: 0, Content: renderSecondaryBtn("✗ Skip [n]", m.isHovered("edit-skip", 0)), Gap: 1},
-			rowItem{ID: "edit-approve-rem", Index: 0, Content: renderSecondaryBtn("⚡ Approve Remaining [a]", m.isHovered("edit-approve-rem", 0)), Gap: 1},
+			rowItem{ID: "edit-approve-rem", Index: 0, Content: renderSecondaryBtn("⚡ All Rem [a]", m.isHovered("edit-approve-rem", 0)), Gap: 1},
 		)
 	}
 	if len(m.edit.appliedStacks) > 0 && !m.edit.requesting {
@@ -296,13 +322,13 @@ func (m *Model) renderEditView(fb *frameBuilder) {
 	}
 	fb.addRow(bar, m.width)
 
-	// Main pane height = remaining rows minus status footer (1) and box borders (3).
-	remaining := max(4, m.height-fb.y()-4)
+	// Main pane height = remaining rows minus footer (2) and box borders (3).
+	remaining := max(4, m.height-fb.y()-5)
 
 	switch m.edit.subTab {
 	case editTabDocument:
 		m.editor.SetHeight(remaining)
-		docBox := renderBox("Document (Editable)", "Tab: instructions · Ctrl+S: save", m.editor.View(), m.width, m.edit.focus == editFocusDocument, m.hoverID == "pane-editor")
+		docBox := renderBox("Document (Editable)", "Tab: instructions · ^S: save", m.editor.View(), m.width, m.edit.focus == editFocusDocument, m.hoverID == "pane-editor")
 		dr := fb.addBlock(docBox)
 		fb.hits.setPane("editor", dr)
 		fb.hits.add("pane-editor", 0, dr)
@@ -316,33 +342,36 @@ func (m *Model) renderEditView(fb *frameBuilder) {
 
 	default:
 		body := m.windowLines(m.renderDiffBody(), max(16, m.width-6), remaining, &m.edit.reviewScroll)
-		box := renderBox("Suggested Edit", "y accept · n skip · a approve remaining · ↑/↓ scroll", body, m.width, m.edit.focus == editFocusReview, false)
+		box := renderBox("Suggested Edit", "y accept · n skip · a approve all · ←/→ sub-tab", body, m.width, m.edit.focus == editFocusReview, false)
 		dr := fb.addBlock(box)
 		fb.hits.setPane("review", dr)
 		fb.hits.add("pane-review", 0, dr)
 	}
+
+	if m.edit.focus == editFocusInstructions {
+		return "Enter Review · ^J Newline · ^X Approve All · Tab Diff · ^T View · ^P Menu/Help"
+	}
+	return "^G Review · ^X Approve All · y Accept · n Skip · a All Rem · u Undo · Tab Instr · ^T View · ^P Menu"
 }
 
-func (m *Model) renderConfigView(fb *frameBuilder) {
-	// Top action row for Config
+func (m *Model) renderConfigView(fb *frameBuilder) string {
 	fb.addRow([]rowItem{
 		{ID: "cfg-mode", Index: 0, Content: renderPill("Form", !m.cfgUI.rawMode, m.isHovered("cfg-mode", 0)), Gap: 1},
-		{ID: "cfg-mode", Index: 1, Content: renderPill("Raw YAML", m.cfgUI.rawMode, m.isHovered("cfg-mode", 1)), Gap: 2},
-		{ID: "cfg-save", Index: 0, Content: renderPrimaryBtn("✓ Save & Apply [Ctrl+S]", m.isHovered("cfg-save", 0)), Gap: 1},
-		{ID: "cfg-fetch", Index: cfgFieldModel, Content: renderSecondaryBtn("⌕ Fetch Models [Alt+F]", m.isHovered("cfg-fetch", cfgFieldModel)), Gap: 1},
+		{ID: "cfg-mode", Index: 1, Content: renderPill("Raw YAML ^Y", m.cfgUI.rawMode, m.isHovered("cfg-mode", 1)), Gap: 2},
+		{ID: "cfg-save", Index: 0, Content: renderPrimaryBtn("✓ Save & Apply ^S", m.isHovered("cfg-save", 0)), Gap: 1},
+		{ID: "cfg-fetch", Index: cfgFieldModel, Content: renderSecondaryBtn("⌕ Fetch Models ^F", m.isHovered("cfg-fetch", cfgFieldModel)), Gap: 1},
 		{ID: "cfg-reload", Index: 0, Content: renderSecondaryBtn("↻ Reload", m.isHovered("cfg-reload", 0)), Gap: 1},
-		{Content: styleDim.Render(truncate(m.cfg.ConfigPath, max(12, m.width-58))), Gap: 0},
+		{Content: styleDim.Render(truncate(m.cfg.ConfigPath, max(10, m.width-62))), Gap: 0},
 	}, m.width)
 
 	if m.cfgUI.rawMode {
-		m.cfgUI.rawYAML.SetHeight(max(5, m.height-fb.y()-4))
-		box := renderBox(".goauthorllm (Raw YAML)", "Ctrl+S: validate, save & apply · Alt+Y: form view", m.cfgUI.rawYAML.View(), m.width, true, false)
+		m.cfgUI.rawYAML.SetHeight(max(5, m.height-fb.y()-5))
+		box := renderBox(".goauthorllm (Raw YAML)", "^S validate, save & apply · ^Y form view", m.cfgUI.rawYAML.View(), m.width, true, false)
 		r := fb.addBlock(box)
 		fb.hits.setPane("cfg-raw", r)
-		return
+		return "^S Save & Apply · ^Y Form View · ^T Switch View · ^P Menu/Help"
 	}
 
-	// Structured Form View with exact clickable rows
 	labelStyle := func(field int) lipgloss.Style {
 		if m.cfgUI.activeField == field {
 			return lipgloss.NewStyle().Width(22).Bold(true).Foreground(lipgloss.Color(colorOrange))
@@ -375,14 +404,13 @@ func (m *Model) renderConfigView(fb *frameBuilder) {
 	addInputRow(cfgFieldEditModel, "Editing Model", m.cfgUI.editModel.View(), pickBtn(cfgFieldEditModel))
 	addInputRow(cfgFieldStreamSpeed, "Stream Speed (c/s)", m.cfgUI.streamSpeed.View(), nil)
 
-	// Default scope toggle pills
 	scopeRow := []rowItem{
 		{ID: "cfg-field", Index: cfgFieldDefaultScope, Content: func() string {
 			p := "  "
 			if m.cfgUI.activeField == cfgFieldDefaultScope {
 				p = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOrange)).Bold(true).Render("▸ ")
 			}
-			return p + labelStyle(cfgFieldDefaultScope).Render("Default Scope")
+			return p + labelStyle(cfgFieldDefaultScope).Render("Default Length")
 		}(), Gap: 1},
 	}
 	for i, sc := range config.ValidScopes {
@@ -395,7 +423,6 @@ func (m *Model) renderConfigView(fb *frameBuilder) {
 	}
 	fb.addRow(scopeRow, m.width)
 
-	// Structured generation toggle
 	structPrefix := "  "
 	if m.cfgUI.activeField == cfgFieldStructuredGen {
 		structPrefix = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOrange)).Bold(true).Render("▸ ")
@@ -409,8 +436,7 @@ func (m *Model) renderConfigView(fb *frameBuilder) {
 	addInputRow(cfgFieldCopyBatch, "Copy Edit Batch", m.cfgUI.copyBatch.View(), nil)
 	addInputRow(cfgFieldDirectedBatch, "Directed Edit Batch", m.cfgUI.directedBatch.View(), nil)
 
-	// Remaining height split between Writing Rules and Copy Edit Rules textareas
-	avail := max(4, m.height-fb.y()-7)
+	avail := max(4, m.height-fb.y()-8)
 	eachH := max(2, avail/2)
 	m.cfgUI.rules.SetHeight(eachH)
 	m.cfgUI.copyEditRules.SetHeight(max(2, avail-eachH))
@@ -422,18 +448,19 @@ func (m *Model) renderConfigView(fb *frameBuilder) {
 	r2 := fb.addBlock(renderBox("Copy Edit Rules (.goauthorllm `copy_edit_rules`)", "Applied to default copy edits", m.cfgUI.copyEditRules.View(), m.width, m.cfgUI.activeField == cfgFieldCopyEditRules, m.isHovered("cfg-field", cfgFieldCopyEditRules)))
 	fb.hits.setPane("cfg-copy-rules", r2)
 	fb.hits.add("cfg-field", cfgFieldCopyEditRules, r2)
+
+	return "^S Save & Apply · ^F Fetch Models · ^Y Raw YAML · Tab/Shift+Tab Field · ^T View · ^P Menu/Help"
 }
 
-func (m *Model) renderFilesView(fb *frameBuilder) {
+func (m *Model) renderFilesView(fb *frameBuilder) string {
 	fb.addRow([]rowItem{
 		{Content: styleTitle.Render("Markdown Documents in ") + styleMuted.Render(truncate(m.cwd, max(12, m.width-38))), Gap: 2},
-		{ID: "files-refresh", Index: 0, Content: renderSecondaryBtn("↻ Refresh [Ctrl+R]", m.isHovered("files-refresh", 0)), Gap: 0},
+		{ID: "files-refresh", Index: 0, Content: renderSecondaryBtn("↻ Refresh ^R", m.isHovered("files-refresh", 0)), Gap: 0},
 	}, m.width)
 
-	// Reserve room for New File box (4 lines) + status bar (1 line)
-	listRoom := max(3, m.height-fb.y()-7)
+	listRoom := max(3, m.height-fb.y()-8)
 	if len(m.files.files) == 0 {
-		fb.addBlock(renderBox("Documents", "No .md files in folder yet", styleMuted.Render("Type a filename below and press Enter to create a new markdown file."), m.width, m.files.focus == filesFocusList, false))
+		fb.addBlock(renderBox("Documents", "No .md files in folder yet", styleMuted.Render("Press Tab to type a new filename, or press ^T to edit Config."), m.width, m.files.focus == filesFocusList, false))
 	} else {
 		if m.files.selected < m.files.scroll {
 			m.files.scroll = m.files.selected
@@ -443,8 +470,7 @@ func (m *Model) renderFilesView(fb *frameBuilder) {
 		}
 		end := min(len(m.files.files), m.files.scroll+listRoom)
 
-		// Render header row of list
-		fb.addBlock(styleDim.Render(fmt.Sprintf("  %d file(s) · ↑/↓ select · Enter or click to open · Tab creates new file", len(m.files.files))))
+		fb.addBlock(styleDim.Render(fmt.Sprintf("  %d file(s) · ↑/↓ select · Enter opens · Tab creates new file", len(m.files.files))))
 		listStartY := fb.y()
 		for i := m.files.scroll; i < end; i++ {
 			name := m.files.files[i]
@@ -477,20 +503,29 @@ func (m *Model) renderFilesView(fb *frameBuilder) {
 	newBox := renderBox("Create or Open by Filename", "Enter: create & open · Tab: file list", m.files.input.View(), m.width, m.files.focus == filesFocusInput, m.hoverID == "pane-file-input")
 	ir := fb.addBlock(newBox)
 	fb.hits.add("pane-file-input", 0, ir)
+
+	return "↑/↓ Select · Enter Open · Tab New Filename · ^R Refresh · ^T Switch View · ^P Menu/Help"
 }
 
-func (m *Model) renderStatusFooter(fb *frameBuilder) {
-	// Pin status footer to the bottom line.
-	for fb.y() < m.height-1 {
+func (m *Model) renderFooter(fb *frameBuilder, keybar string) {
+	// Pin the 2-line footer (Keybar + Status) to the bottom of the screen.
+	for fb.y() < m.height-2 {
 		fb.addBlank()
 	}
+
+	keybarLine := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(colorOrangeLight)).
+		Background(lipgloss.Color("#1A1410")).
+		Width(max(1, m.width)).
+		Render(" " + truncate(keybar, max(1, m.width-2)))
+	fb.lines = append(fb.lines, keybarLine)
 
 	left := m.statusText
 	if m.busy() {
 		left = m.spin.View() + " " + left
 	}
 	if m.statusLevel == "error" {
-		left = "[Alt+E details] " + left
+		left = "[^P -> e for details] " + left
 	}
 	right := fmt.Sprintf("%s · %s", m.activeModelName(), m.cfg.BaseURL)
 	rightRendered := styleDim.Render(truncate(right, max(12, m.width/2)))
@@ -511,14 +546,14 @@ func (m *Model) renderStatusFooter(fb *frameBuilder) {
 func (m *Model) renderMetaOverlay(fb *frameBuilder) {
 	fb.addRow([]rowItem{
 		{Content: styleBrand.Render("◆ Document Instructions & Front Matter"), Gap: 2},
-		{ID: "save", Index: 0, Content: renderPrimaryBtn("✓ Save [Ctrl+S]", m.isHovered("save", 0)), Gap: 1},
+		{ID: "save", Index: 0, Content: renderPrimaryBtn("✓ Save ^S", m.isHovered("save", 0)), Gap: 1},
 		{ID: "close-overlay", Index: 0, Content: renderSecondaryBtn("Close [Esc]", m.isHovered("close-overlay", 0)), Gap: 0},
 	}, m.width)
 	fb.addBlock(styleDim.Render("YAML front matter for this file. Set `system_message:` to steer generation & editing for this document."))
-	box := renderBox("Front Matter", "Ctrl+S save · Esc close", m.frontMatter.View(), m.width, true, false)
+	box := renderBox("Front Matter", "^S save · Esc close", m.frontMatter.View(), m.width, true, false)
 	r := fb.addBlock(box)
 	fb.hits.setPane("frontmatter", r)
-	m.renderStatusFooter(fb)
+	m.renderFooter(fb, "^S Save Front Matter · Esc Close")
 }
 
 func (m *Model) renderModelPickerOverlay(fb *frameBuilder) {
@@ -530,18 +565,18 @@ func (m *Model) renderModelPickerOverlay(fb *frameBuilder) {
 
 	if m.modelPickerBusy {
 		fb.addBlock(m.spin.View() + " Loading models from " + m.cfgUI.baseURL.Value() + "...")
-		m.renderStatusFooter(fb)
+		m.renderFooter(fb, "Esc Cancel")
 		return
 	}
 
 	models := m.filteredModels()
 	if len(models) == 0 {
 		fb.addBlock(styleMuted.Render("No matching models."))
-		m.renderStatusFooter(fb)
+		m.renderFooter(fb, "Type to filter · Esc Cancel")
 		return
 	}
 
-	room := max(3, m.height-fb.y()-2)
+	room := max(3, m.height-fb.y()-3)
 	m.modelPickerIndex = clampInt(m.modelPickerIndex, 0, len(models)-1)
 	start := max(0, m.modelPickerIndex-room+1)
 	end := min(len(models), start+room)
@@ -562,7 +597,7 @@ func (m *Model) renderModelPickerOverlay(fb *frameBuilder) {
 		fb.lines = append(fb.lines, st.Width(max(12, m.width-2)).Render(truncate(prefix+id, max(12, m.width-2))))
 		fb.hits.add("model-pick", i, rect{x1: 0, y1: y, x2: max(0, m.width-1), y2: y})
 	}
-	m.renderStatusFooter(fb)
+	m.renderFooter(fb, "↑/↓ Select · Enter Pick Model · Type to Filter · Esc Cancel")
 }
 
 func (m *Model) renderHelpOverlay(fb *frameBuilder) {
@@ -572,51 +607,49 @@ func (m *Model) renderHelpOverlay(fb *frameBuilder) {
 	}, m.width)
 
 	helpText := strings.Join([]string{
-		styleTitle.Render("Global Navigation"),
-		"  Alt+1 / Alt+2 / Alt+3 / Alt+4   Switch Write / Edit / Config / Files (or click tabs)",
-		"  Alt+M                           Open Document Instructions (YAML Front Matter)",
-		"  Ctrl+S                          Save current document (or save .goauthorllm in Config)",
-		"  Ctrl+O                          Switch to Files view",
-		"  F1 or Alt+/                     Toggle this Help guide",
-		"  Alt+E                           View full last error message",
-		"  Esc                             Stop active generation/edit or close overlay",
-		"  Ctrl+Q                          Save & quit",
+		styleTitle.Render("Universal Navigation (macOS, Windows, Linux & Termux)"),
+		"  ^P  (Ctrl+P)         Open Command Menu (jump to any view, length, rounds, Meta, Help)",
+		"  ^T  (Ctrl+T)         Cycle top-level views: Write → Edit → Config → Files",
+		"  ^O  (Ctrl+O)         Jump directly to Files",
+		"  ^S  (Ctrl+S)         Save document (or save & apply .goauthorllm in Config)",
+		"  ^Q  (Ctrl+Q)         Save & quit",
+		"  Esc                  Stop active stream/edit immediately, or close menu/overlay",
 		"",
 		styleTitle.Render("Write & Generate"),
-		"  Ctrl+G (or Enter in Prompt)     Generate content using selected scope & rounds",
-		"  Alt+S (or click pills)          Switch scope: Sentence / Paragraph / Section / Free",
-		"  Alt+[ / Alt+] (or click - / +)  Set generation rounds (×1 to ×20; auto-plans multi-round)",
-		"  Alt+- / Alt+= (or click Speed)  Adjust live streaming speed (Max, 35, 65, 110, 180 c/s)",
-		"  Esc (while streaming)           Stop immediately at exact visible character",
-		"  Ctrl+R (or +1 Round)            Generate one more round seamlessly",
-		"  Tab                             Toggle focus between Document and Guidance Prompt",
-		"  Alt+Enter / Ctrl+J              Insert newline inside Guidance Prompt",
-		"  Alt+↑ / Alt+↓                   Recall saved prompt history for this document",
-		"  Ctrl+Z / Alt+K                  Undo last change / Delete from cursor to end",
+		"  ^G  (Ctrl+G)         Generate content with active Length & Rounds",
+		"  ^L  (Ctrl+L)         Cycle Length: Sentence → Paragraph → Section → Free",
+		"  ^N  (Ctrl+N)         Cycle Rounds: ×1 → ×2 → ×3 → ×5 (multi-round auto-plans)",
+		"  ^R  (Ctrl+R)         Generate +1 more round seamlessly",
+		"  Tab                  Cycle focus: Document → Guidance Prompt → Controls Bar",
+		"  Controls Bar keys    1-4 pick Length · -/+ set Rounds (1..20) · Enter Go · e/c/f/m/?",
+		"  Enter / ^J (Prompt)  Generate / Insert newline inside Guidance Prompt",
+		"  ^Z / ^K (Editor)     Undo last change / Delete from cursor to end",
+		"  Esc (streaming)      Stop at exact visible character (discards unrevealed buffer)",
 		"",
 		styleTitle.Render("Copy Edit & Custom Edit"),
-		"  Ctrl+G (or Enter in Instr)      Scan & review edits one by one (blank = copy edit)",
-		"  Alt+A                           Approve All validated edits automatically",
-		"  y / n / a (in Diff view)        Accept / Skip / Approve All Remaining",
-		"  u (or Ctrl+Z)                   Undo last applied edit",
-		"  ← / →                           Browse session log entries",
+		"  ^G  (Ctrl+G)         Scan & review edits one by one (blank instructions = copy edit)",
+		"  ^X  (Ctrl+X)         Approve All validated edits automatically",
+		"  y / n / a / u        Accept / Skip / Approve Remaining / Undo (when in Diff view)",
+		"  ← / →                Switch Diff / Log / Document sub-tabs, or browse Log entries",
+		"  Tab                  Toggle between Edit Instructions and Diff view",
 		"",
 		styleTitle.Render("Config (.goauthorllm)"),
-		"  Alt+Y                           Toggle Form view vs Raw YAML view",
-		"  Alt+F (or Pick…)                Fetch & pick models live from your endpoint",
-		"  Ctrl+S                          Save .goauthorllm and hot-reload immediately",
+		"  ^S  (Ctrl+S)         Save .goauthorllm and hot-reload clients & stream speed live",
+		"  ^F  (Ctrl+F)         Fetch & pick models live from <base_url>/models",
+		"  ^Y  (Ctrl+Y)         Toggle Form view vs Raw YAML view",
+		"  Tab / Shift+Tab      Move between configuration fields",
 		"",
 		styleTitle.Render("Mouse Support"),
-		"  Click any tab, scope pill, speed/rounds control, button, file row, or pane",
-		"  Scroll wheel scrolls whichever pane your cursor is over",
+		"  Click/tap tabs, length pills, -/+ rounds, buttons, files, or panes (Cell Motion)",
+		"  Scroll wheel scrolls whichever pane the cursor is over",
 	}, "\n")
 
-	room := max(4, m.height-fb.y()-4)
+	room := max(4, m.height-fb.y()-5)
 	body := m.windowLines(helpText, max(20, m.width-6), room, &m.helpScroll)
 	box := renderBox("Shortcuts", "↑/↓ scroll · Esc close", body, m.width, true, false)
 	r := fb.addBlock(box)
 	fb.hits.setPane("help", r)
-	m.renderStatusFooter(fb)
+	m.renderFooter(fb, "↑/↓ PgUp/PgDn Scroll · Esc Close")
 }
 
 func (m *Model) renderErrorOverlay(fb *frameBuilder) {
@@ -625,12 +658,12 @@ func (m *Model) renderErrorOverlay(fb *frameBuilder) {
 		{ID: "close-overlay", Index: 0, Content: renderSecondaryBtn("Close [Esc]", m.isHovered("close-overlay", 0)), Gap: 0},
 	}, m.width)
 
-	room := max(4, m.height-fb.y()-4)
+	room := max(4, m.height-fb.y()-5)
 	body := m.windowLines(m.lastError, max(20, m.width-6), room, &m.errorScroll)
 	box := renderBox("Last Error", "↑/↓ PgUp/PgDn scroll · Esc close", body, m.width, true, false)
 	r := fb.addBlock(box)
 	fb.hits.setPane("error", r)
-	m.renderStatusFooter(fb)
+	m.renderFooter(fb, "↑/↓ PgUp/PgDn Scroll · Esc Close")
 }
 
 func (m *Model) windowLines(body string, width, height int, offset *int) string {

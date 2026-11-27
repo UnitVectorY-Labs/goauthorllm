@@ -30,7 +30,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, tea.Quit
 	}
 
-	// Esc: stop active LLM work first, then close overlay, then blur prompt.
+	// Esc: stop active LLM work first, then close overlay, then return to editor.
 	if msg.Type == tea.KeyEsc {
 		if m.gen.active || m.gen.planning {
 			m.stopGeneration()
@@ -45,7 +45,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			m.syncFocus()
 			return true, nil
 		}
-		if m.view == viewWrite && m.writeFocus == writeFocusPrompt {
+		if m.view == viewWrite && m.writeFocus != writeFocusEditor {
 			m.writeFocus = writeFocusEditor
 			m.syncFocus()
 			return true, nil
@@ -58,13 +58,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 	}
 
-	// Allow live speed adjustment even while streaming!
-	if m.gen.active && (k == "alt+-" || k == "alt+=" || k == "alt++") {
-		if k == "alt+-" {
-			m.cycleStreamSpeed(-1)
+	// Universal Command Menu (^P) toggles from anywhere when idle.
+	if k == "ctrl+p" && !m.busy() {
+		if m.overlay == overlayMenu {
+			m.overlay = overlayNone
 		} else {
-			m.cycleStreamSpeed(1)
+			m.overlay = overlayMenu
+			m.menuIndex = 0
 		}
+		m.syncFocus()
 		return true, nil
 	}
 
@@ -73,7 +75,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return m.handleOverlayKey(msg)
 	}
 
-	// Global shortcuts
+	// Universal cross-platform shortcuts (Ctrl-based, plus optional Alt/F1 aliases)
 	switch k {
 	case "f1", "alt+/":
 		m.overlay = overlayHelp
@@ -93,6 +95,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			m.syncFocus()
 			return true, nil
 		}
+	case "ctrl+t":
+		m.cycleView()
+		return true, nil
 	case "alt+1":
 		m.switchView(viewWrite)
 		return true, nil
@@ -137,8 +142,44 @@ func (m *Model) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return false, nil
 }
 
+func (m *Model) cycleView() {
+	order := []workspaceView{viewConfig, viewFiles}
+	if m.doc != nil {
+		order = []workspaceView{viewWrite, viewEdit, viewConfig, viewFiles}
+	}
+	idx := 0
+	for i, v := range order {
+		if v == m.view {
+			idx = i
+			break
+		}
+	}
+	m.switchView(order[(idx+1)%len(order)])
+}
+
 func (m *Model) handleOverlayKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch m.overlay {
+	case overlayMenu:
+		entries := m.menuEntries()
+		switch msg.Type {
+		case tea.KeyUp:
+			if len(entries) > 0 {
+				m.menuIndex = (m.menuIndex - 1 + len(entries)) % len(entries)
+			}
+			return true, nil
+		case tea.KeyDown:
+			if len(entries) > 0 {
+				m.menuIndex = (m.menuIndex + 1) % len(entries)
+			}
+			return true, nil
+		case tea.KeyEnter:
+			return true, m.runMenuIndex(m.menuIndex)
+		}
+		if handled, cmd := m.runMenuByKey(msg.String()); handled {
+			return true, cmd
+		}
+		return true, nil
+
 	case overlayMeta:
 		if msg.String() == "ctrl+s" {
 			if err := m.saveCurrentDocument(); err != nil {
@@ -203,11 +244,27 @@ func (m *Model) handleOverlayKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 func (m *Model) handleWriteKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	k := msg.String()
 	switch k {
-	case "tab", "shift+tab":
-		if m.writeFocus == writeFocusEditor {
+	case "tab":
+		switch m.writeFocus {
+		case writeFocusEditor:
 			m.promptOpen = true
 			m.writeFocus = writeFocusPrompt
-		} else {
+		case writeFocusPrompt:
+			m.writeFocus = writeFocusControls
+		default:
+			m.writeFocus = writeFocusEditor
+		}
+		m.resizeInputs()
+		m.syncFocus()
+		return true, nil
+	case "shift+tab":
+		switch m.writeFocus {
+		case writeFocusEditor:
+			m.writeFocus = writeFocusControls
+		case writeFocusControls:
+			m.promptOpen = true
+			m.writeFocus = writeFocusPrompt
+		default:
 			m.writeFocus = writeFocusEditor
 		}
 		m.resizeInputs()
@@ -217,8 +274,11 @@ func (m *Model) handleWriteKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, m.startGeneration(0)
 	case "ctrl+r":
 		return true, m.startGeneration(1)
-	case "alt+s":
+	case "ctrl+l", "alt+s":
 		m.cycleScope(1)
+		return true, nil
+	case "ctrl+n":
+		m.cycleRoundsPreset()
 		return true, nil
 	case "alt+[":
 		m.adjustRounds(-1)
@@ -226,11 +286,51 @@ func (m *Model) handleWriteKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	case "alt+]":
 		m.adjustRounds(1)
 		return true, nil
-	case "alt+-":
-		m.cycleStreamSpeed(-1)
-		return true, nil
-	case "alt+=", "alt++":
-		m.cycleStreamSpeed(1)
+	}
+
+	// Controls Bar focus: zero-modifier, ultra-fast single-key control!
+	if m.writeFocus == writeFocusControls {
+		switch k {
+		case "1":
+			m.gen.scope = engine.ScopeSentence
+			m.setStatus("Generation length: Sentence", "accent")
+		case "2":
+			m.gen.scope = engine.ScopeParagraph
+			m.setStatus("Generation length: Paragraph", "accent")
+		case "3":
+			m.gen.scope = engine.ScopeSection
+			m.setStatus("Generation length: Section", "accent")
+		case "4":
+			m.gen.scope = engine.ScopeFree
+			m.setStatus("Generation length: Free", "accent")
+		case "left":
+			m.cycleScope(-1)
+		case "right":
+			m.cycleScope(1)
+		case "-", "_":
+			m.adjustRounds(-1)
+		case "+", "=":
+			m.adjustRounds(1)
+		case "enter", "g":
+			return true, m.startGeneration(0)
+		case "r":
+			return true, m.startGeneration(1)
+		case "u":
+			m.undoBody()
+		case "e":
+			m.switchView(viewEdit)
+		case "c":
+			m.switchView(viewConfig)
+		case "f":
+			m.switchView(viewFiles)
+		case "m":
+			m.overlay = overlayMeta
+			m.syncFocus()
+		case "?", "h":
+			m.overlay = overlayHelp
+			m.helpScroll = 0
+			m.syncFocus()
+		}
 		return true, nil
 	}
 
@@ -255,7 +355,7 @@ func (m *Model) handleWriteKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	case "ctrl+z":
 		m.undoBody()
 		return true, nil
-	case "alt+k":
+	case "ctrl+k", "alt+k":
 		m.deleteToEnd()
 		return true, nil
 	case "pgup":
@@ -285,15 +385,19 @@ func (m *Model) handleEditKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 	case "ctrl+g":
 		return true, m.startEditPass(false)
-	case "alt+a":
+	case "ctrl+x", "alt+a":
 		if m.edit.current != nil {
 			return true, m.approveAllRemaining()
 		}
 		return true, m.startEditPass(true)
 	case "ctrl+a":
-		return true, m.acceptCurrentEdit()
+		if m.edit.focus != editFocusInstructions && m.edit.focus != editFocusDocument {
+			return true, m.acceptCurrentEdit()
+		}
 	case "ctrl+k":
-		return true, m.skipCurrentEdit()
+		if m.edit.focus != editFocusInstructions && m.edit.focus != editFocusDocument {
+			return true, m.skipCurrentEdit()
+		}
 	case "ctrl+r":
 		return true, m.startEditPass(false)
 	}
@@ -335,6 +439,11 @@ func (m *Model) handleEditKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	case "u", "ctrl+z":
 		m.undoLastAppliedEdit()
 		return true, nil
+	case "?":
+		m.overlay = overlayHelp
+		m.helpScroll = 0
+		m.syncFocus()
+		return true, nil
 	case "up":
 		m.edit.reviewScroll = max(0, m.edit.reviewScroll-1)
 		return true, nil
@@ -370,10 +479,10 @@ func (m *Model) handleEditKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 func (m *Model) handleConfigKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	k := msg.String()
 	switch k {
-	case "alt+y":
+	case "ctrl+y", "alt+y":
 		m.toggleConfigRawMode(!m.cfgUI.rawMode)
 		return true, nil
-	case "alt+f":
+	case "ctrl+f", "alt+f":
 		target := cfgFieldModel
 		if m.cfgUI.activeField == cfgFieldGenModel || m.cfgUI.activeField == cfgFieldEditModel {
 			target = m.cfgUI.activeField
@@ -444,6 +553,13 @@ func (m *Model) handleFilesKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		m.syncFocus()
 		return true, nil
+	case "?":
+		if m.files.focus == filesFocusList {
+			m.overlay = overlayHelp
+			m.helpScroll = 0
+			m.syncFocus()
+			return true, nil
+		}
 	case "up":
 		if m.files.focus == filesFocusList && m.files.selected > 0 {
 			m.files.selected--
@@ -497,7 +613,7 @@ func (m *Model) openTypedFilename() tea.Cmd {
 // --- Mouse Handling ---
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
-	// Hover tracking
+	// Hover tracking (gracefully handled if terminal sends motion events)
 	if msg.Action == tea.MouseActionMotion {
 		if target, ok := m.hits.hit(msg.X, msg.Y); ok {
 			if m.hoverID != target.ID || m.hoverIndex != target.Index {
@@ -582,7 +698,6 @@ func (m *Model) handleWheel(x, y, dir int) bool {
 		}
 		return true
 	}
-	// Fallback: scroll active primary area
 	if m.overlay == overlayHelp {
 		m.helpScroll = max(0, m.helpScroll+dir*3)
 		return true
@@ -607,6 +722,14 @@ func (m *Model) dispatchClick(t hitTarget) tea.Cmd {
 	case "close-overlay":
 		m.overlay = overlayNone
 		m.syncFocus()
+	case "menu":
+		if !m.busy() {
+			m.overlay = overlayMenu
+			m.menuIndex = 0
+			m.syncFocus()
+		}
+	case "menu-item":
+		return m.runMenuIndex(t.Index)
 	case "show-error":
 		if m.lastError != "" {
 			m.overlay = overlayError
@@ -652,14 +775,12 @@ func (m *Model) dispatchClick(t hitTarget) tea.Cmd {
 		scopes := []engine.Scope{engine.ScopeSentence, engine.ScopeParagraph, engine.ScopeSection, engine.ScopeFree}
 		if t.Index >= 0 && t.Index < len(scopes) {
 			m.gen.scope = scopes[t.Index]
-			m.setStatus("Generation scope: "+m.gen.scope.Label(), "accent")
+			m.setStatus("Generation length: "+m.gen.scope.Label(), "accent")
 		}
 	case "rounds-dec":
 		m.adjustRounds(-1)
 	case "rounds-inc":
 		m.adjustRounds(1)
-	case "speed":
-		m.cycleStreamSpeed(1)
 	case "generate":
 		return m.startGeneration(0)
 	case "plus-one":
@@ -802,6 +923,9 @@ func (m *Model) delegateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.prompt, cmd = m.prompt.Update(msg)
 			return m, cmd
+		}
+		if m.writeFocus == writeFocusControls {
+			return m, nil
 		}
 		return m.updateDocumentEditor(msg)
 

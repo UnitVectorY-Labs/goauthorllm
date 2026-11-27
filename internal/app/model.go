@@ -41,6 +41,7 @@ type overlayKind int
 
 const (
 	overlayNone overlayKind = iota
+	overlayMenu
 	overlayMeta
 	overlayHelp
 	overlayError
@@ -53,6 +54,7 @@ type writeFocus int
 const (
 	writeFocusEditor writeFocus = iota
 	writeFocusPrompt
+	writeFocusControls
 )
 
 // editSubTab switches between Diff Review, Session Log, and Document in Edit view.
@@ -179,6 +181,7 @@ type Model struct {
 	lastError   string
 	errorScroll int
 	helpScroll  int
+	menuIndex   int
 
 	// Model picker modal state
 	modelPickerTarget int // which config field receives the picked model
@@ -250,11 +253,11 @@ func NewModel(cfg config.Config, client *llm.Client) (Model, error) {
 		}
 		m.view = viewWrite
 		m.writeFocus = writeFocusEditor
-		m.setStatus("Opened "+filepath.Base(path)+" · Ctrl+G generate · Alt+2 edit · Alt+3 config", "success")
+		m.setStatus("Opened "+filepath.Base(path)+" · ^G generate · ^L length · ^N rounds · ^T view · ^P menu", "success")
 	} else {
 		m.view = viewFiles
 		m.files.focus = filesFocusList
-		m.setStatus("Choose a markdown file or type a new filename · Alt+3 edits .goauthorllm", "info")
+		m.setStatus("Select a file or type a new name · ^T switches view · ^P menu & help", "info")
 	}
 
 	m.syncFocus()
@@ -491,15 +494,16 @@ func (m *Model) syncFocus() {
 	case overlayModelPicker:
 		m.modelPickerFilter.Focus()
 		return
-	case overlayHelp, overlayError:
+	case overlayHelp, overlayError, overlayMenu:
 		return
 	}
 
 	switch m.view {
 	case viewWrite:
-		if m.writeFocus == writeFocusPrompt {
+		switch m.writeFocus {
+		case writeFocusPrompt:
 			m.prompt.Focus()
-		} else {
+		case writeFocusEditor:
 			m.editor.Focus()
 		}
 	case viewEdit:
