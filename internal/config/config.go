@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,18 +16,38 @@ import (
 )
 
 const (
+	// LocalConfigFilename is the default project configuration file in the working directory.
+	LocalConfigFilename = ".goauthorllm"
 	// DefaultBaseURL is the default OpenAI-compatible endpoint (local Ollama).
 	DefaultBaseURL = "http://localhost:11434/v1"
 	// DefaultModel is the default LLM model name.
 	DefaultModel = "gemma3:4b"
-	// DefaultCopyEditBatchSize preserves the original one-at-a-time copy-edit flow.
-	DefaultCopyEditBatchSize = 1
-	// DefaultDirectedEditBatchSize preserves the original directed-edit batch size.
+	// DefaultScope is the default content generation granularity.
+	DefaultScope = "paragraph"
+	// DefaultCopyEditBatchSize is the default max suggestions per copy-edit pass.
+	DefaultCopyEditBatchSize = 5
+	// DefaultDirectedEditBatchSize is the default max suggestions per directed-edit pass.
 	DefaultDirectedEditBatchSize = 10
+	// DefaultStreamSpeed is 0 (max speed, unthrottled).
+	DefaultStreamSpeed = 0
 )
 
-// Config holds all runtime settings.
+// ValidScopes lists all supported generation scopes.
+var ValidScopes = []string{"sentence", "paragraph", "section", "free"}
+
+// IsValidScope reports whether scope is a supported generation scope.
+func IsValidScope(scope string) bool {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "sentence", "paragraph", "section", "free":
+		return true
+	default:
+		return false
+	}
+}
+
+// Config holds all resolved runtime settings.
 type Config struct {
+	ConfigPath            string
 	FilePath              string
 	NonInteractive        bool
 	Mode                  string
@@ -34,6 +55,7 @@ type Config struct {
 	Approval              string
 	Guidance              string
 	EditInstructions      string
+	Rounds                int
 	MaxEdits              int
 	BaseURL               string
 	Model                 string
@@ -42,26 +64,40 @@ type Config struct {
 	APIKey                string
 	Timeout               time.Duration
 	UserAgent             string
+	StreamSpeed           int // characters per second; 0 means unthrottled (max speed)
+	DefaultScope          string
+	StructuredGeneration  bool
+	Rules                 string
+	CopyEditRules         string
 	CopyEditBatchSize     int
 	DirectedEditBatchSize int
 	MessageOverrides      prompts.Overrides
 }
 
-type localConfigFile struct {
-	Mode                  string                      `yaml:"mode"`
-	Submode               string                      `yaml:"submode"`
-	Approval              string                      `yaml:"approval"`
-	Guidance              string                      `yaml:"guidance"`
-	GuidanceFile          string                      `yaml:"guidance_file"`
-	EditInstructions      string                      `yaml:"edit_instructions"`
-	EditInstructionsFile  string                      `yaml:"edit_instructions_file"`
-	MaxEdits              *int                        `yaml:"max_edits"`
-	BaseURL               string                      `yaml:"base_url"`
-	Model                 string                      `yaml:"model"`
-	GenerationModel       string                      `yaml:"generation_model"`
-	EditingModel          string                      `yaml:"editing_model"`
-	CopyEditBatchSize     *int                        `yaml:"copy_edit_batch_size"`
-	DirectedEditBatchSize *int                        `yaml:"directed_edit_batch_size"`
+// LocalFile models the on-disk .goauthorllm YAML configuration.
+type LocalFile struct {
+	BaseURL               string                      `yaml:"base_url,omitempty"`
+	Model                 string                      `yaml:"model,omitempty"`
+	GenerationModel       string                      `yaml:"generation_model,omitempty"`
+	EditingModel          string                      `yaml:"editing_model,omitempty"`
+	StreamSpeed           *int                        `yaml:"stream_chars_per_sec,omitempty"`
+	DefaultScope          string                      `yaml:"default_scope,omitempty"`
+	StructuredGeneration  *bool                       `yaml:"structured_generation,omitempty"`
+	Rules                 string                      `yaml:"rules,omitempty"`
+	RulesFile             string                      `yaml:"rules_file,omitempty"`
+	CopyEditRules         string                      `yaml:"copy_edit_rules,omitempty"`
+	CopyEditRulesFile     string                      `yaml:"copy_edit_rules_file,omitempty"`
+	CopyEditBatchSize     *int                        `yaml:"copy_edit_batch_size,omitempty"`
+	DirectedEditBatchSize *int                        `yaml:"directed_edit_batch_size,omitempty"`
+	Mode                  string                      `yaml:"mode,omitempty"`
+	Submode               string                      `yaml:"submode,omitempty"`
+	Approval              string                      `yaml:"approval,omitempty"`
+	Rounds                *int                        `yaml:"rounds,omitempty"`
+	MaxEdits              *int                        `yaml:"max_edits,omitempty"`
+	Guidance              string                      `yaml:"guidance,omitempty"`
+	GuidanceFile          string                      `yaml:"guidance_file,omitempty"`
+	EditInstructions      string                      `yaml:"edit_instructions,omitempty"`
+	EditInstructionsFile  string                      `yaml:"edit_instructions_file,omitempty"`
 	MessageOverrides      map[string]prompts.Override `yaml:",inline"`
 }
 
@@ -74,10 +110,14 @@ func (values *stringListFlag) Set(value string) error {
 }
 
 // Load parses command-line flags, environment variables, and .goauthorllm
-// into a Config. Flags take precedence over environment variables, which take
-// precedence over .goauthorllm values.
+// into a Config. Precedence: Flags > Environment > .goauthorllm > Defaults.
 func Load(args []string) (Config, error) {
-	localCfg, err := loadLocalConfig(".goauthorllm")
+	cwd, err := os.Getwd()
+	if err != nil {
+		return Config{}, err
+	}
+	configPath := filepath.Join(cwd, LocalConfigFilename)
+	localCfg, err := LoadLocal(configPath)
 	if err != nil {
 		return Config{}, err
 	}
@@ -91,34 +131,42 @@ func Load(args []string) (Config, error) {
 		timeoutDefault = parsed
 	}
 
-	cfg := Config{}
-	var baseURLFlag string
-	var modelFlag string
-	var generationModelFlag string
-	var editingModelFlag string
-	var copyEditBatchSizeFlag int
-	var directedEditBatchSizeFlag int
-	var maxEditsFlag int
-	var modeFlag string
-	var submodeFlag string
-	var approvalFlag string
-	var guidanceFlag string
-	var guidanceFileFlag string
-	var editInstructionsFlag string
-	var editInstructionsFileFlag string
-	var promptFiles stringListFlag
-	var promptAppendFiles stringListFlag
+	cfg := Config{ConfigPath: configPath}
+	var (
+		baseURLFlag               string
+		modelFlag                 string
+		generationModelFlag       string
+		editingModelFlag          string
+		streamSpeedFlag           int
+		defaultScopeFlag          string
+		structuredGenFlag         bool
+		roundsFlag                int
+		copyEditBatchSizeFlag     int
+		directedEditBatchSizeFlag int
+		maxEditsFlag              int
+		modeFlag                  string
+		submodeFlag               string
+		approvalFlag              string
+		guidanceFlag              string
+		guidanceFileFlag          string
+		editInstructionsFlag      string
+		editInstructionsFileFlag  string
+		promptFiles               stringListFlag
+		promptAppendFiles         stringListFlag
+	)
+
 	fs := flag.NewFlagSet("goauthorllm", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&cfg.FilePath, "file", firstNonEmpty(os.Getenv("GOAUTHORLLM_FILE")), "markdown document path")
 	fs.BoolVar(&cfg.NonInteractive, "non-interactive", false, "run once without launching the TUI")
 	fs.StringVar(&modeFlag, "mode", "", "operation mode: generate or edit")
-	fs.StringVar(&submodeFlag, "submode", "", "generate: continue or new-section; edit: copy or directed")
-	fs.StringVar(&approvalFlag, "approval", "", "non-interactive edit approval: approve-all or llm-approved")
+	fs.StringVar(&submodeFlag, "submode", "", "generate: sentence, paragraph, section, free (or continue, new-section); edit: copy or directed")
+	fs.StringVar(&approvalFlag, "approval", "", "non-interactive edit approval: approve-all")
 	fs.StringVar(&guidanceFlag, "guidance", "", "optional generation guidance")
 	fs.StringVar(&guidanceFileFlag, "guidance-file", "", "path containing generation guidance")
-	fs.StringVar(&editInstructionsFlag, "edit-instructions", "", "instructions for directed editing")
+	fs.StringVar(&editInstructionsFlag, "edit-instructions", "", "instructions for directed/custom editing")
 	fs.StringVar(&editInstructionsFileFlag, "edit-instructions-file", "", "path containing directed edit instructions")
+	fs.IntVar(&roundsFlag, "rounds", 1, "number of generation rounds to run")
 	fs.IntVar(&maxEditsFlag, "max-edits", 0, "maximum edits to apply in this run (0 is unlimited)")
 	fs.Var(&promptFiles, "prompt-file", "replace a prompt from NAME=PATH (repeatable)")
 	fs.Var(&promptAppendFiles, "prompt-append-file", "append to a prompt from NAME=PATH (repeatable)")
@@ -126,6 +174,9 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&modelFlag, "model", "", "LLM model name")
 	fs.StringVar(&generationModelFlag, "generation-model", "", "model for generation requests (defaults to --model)")
 	fs.StringVar(&editingModelFlag, "editing-model", "", "model for editing requests (defaults to --model)")
+	fs.IntVar(&streamSpeedFlag, "stream-speed", DefaultStreamSpeed, "streaming display speed in characters/sec (0 = max speed)")
+	fs.StringVar(&defaultScopeFlag, "scope", "", "default generation scope: sentence, paragraph, section, or free")
+	fs.BoolVar(&structuredGenFlag, "structured-generation", true, "use structured JSON streaming for generation")
 	fs.IntVar(&copyEditBatchSizeFlag, "copy-edit-batch-size", DefaultCopyEditBatchSize, "maximum copy-edit suggestions per batch")
 	fs.IntVar(&directedEditBatchSizeFlag, "directed-edit-batch-size", DefaultDirectedEditBatchSize, "maximum directed-edit suggestions per batch")
 	fs.StringVar(&cfg.APIKey, "api-key", firstNonEmpty(os.Getenv("GOAUTHORLLM_API_KEY"), os.Getenv("OPENAI_API_KEY")), "API key for the LLM endpoint")
@@ -166,26 +217,122 @@ func Load(args []string) (Config, error) {
 		localCfg.EditingModel,
 		cfg.Model,
 	)
-	cfg.CopyEditBatchSize, err = resolvePositiveIntValue(providedFlags["copy-edit-batch-size"], copyEditBatchSizeFlag, os.Getenv("GOAUTHORLLM_COPY_EDIT_BATCH_SIZE"), localCfg.CopyEditBatchSize, DefaultCopyEditBatchSize, "copy edit batch size")
+	cfg.StreamSpeed, err = resolveNonNegativeIntValue(
+		providedFlags["stream-speed"],
+		streamSpeedFlag,
+		os.Getenv("GOAUTHORLLM_STREAM_SPEED"),
+		localCfg.StreamSpeed,
+		DefaultStreamSpeed,
+		"stream speed",
+	)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.DirectedEditBatchSize, err = resolvePositiveIntValue(providedFlags["directed-edit-batch-size"], directedEditBatchSizeFlag, os.Getenv("GOAUTHORLLM_DIRECTED_EDIT_BATCH_SIZE"), localCfg.DirectedEditBatchSize, DefaultDirectedEditBatchSize, "directed edit batch size")
+	cfg.DefaultScope = strings.ToLower(strings.TrimSpace(resolveStringValue(
+		providedFlags["scope"],
+		defaultScopeFlag,
+		os.Getenv("GOAUTHORLLM_SCOPE"),
+		localCfg.DefaultScope,
+		DefaultScope,
+	)))
+	if !IsValidScope(cfg.DefaultScope) {
+		return Config{}, fmt.Errorf("invalid scope %q: must be sentence, paragraph, section, or free", cfg.DefaultScope)
+	}
+	cfg.StructuredGeneration, err = resolveBoolValue(
+		providedFlags["structured-generation"],
+		structuredGenFlag,
+		os.Getenv("GOAUTHORLLM_STRUCTURED_GENERATION"),
+		localCfg.StructuredGeneration,
+		true,
+		"structured generation",
+	)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.MaxEdits, err = resolveNonNegativeIntValue(providedFlags["max-edits"], maxEditsFlag, os.Getenv("GOAUTHORLLM_MAX_EDITS"), localCfg.MaxEdits, 0, "maximum edits")
+	cfg.Rounds, err = resolvePositiveIntValue(
+		providedFlags["rounds"],
+		roundsFlag,
+		os.Getenv("GOAUTHORLLM_ROUNDS"),
+		localCfg.Rounds,
+		1,
+		"rounds",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CopyEditBatchSize, err = resolvePositiveIntValue(
+		providedFlags["copy-edit-batch-size"],
+		copyEditBatchSizeFlag,
+		os.Getenv("GOAUTHORLLM_COPY_EDIT_BATCH_SIZE"),
+		localCfg.CopyEditBatchSize,
+		DefaultCopyEditBatchSize,
+		"copy edit batch size",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DirectedEditBatchSize, err = resolvePositiveIntValue(
+		providedFlags["directed-edit-batch-size"],
+		directedEditBatchSizeFlag,
+		os.Getenv("GOAUTHORLLM_DIRECTED_EDIT_BATCH_SIZE"),
+		localCfg.DirectedEditBatchSize,
+		DefaultDirectedEditBatchSize,
+		"directed edit batch size",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.MaxEdits, err = resolveNonNegativeIntValue(
+		providedFlags["max-edits"],
+		maxEditsFlag,
+		os.Getenv("GOAUTHORLLM_MAX_EDITS"),
+		localCfg.MaxEdits,
+		0,
+		"maximum edits",
+	)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.Mode = resolveStringValue(providedFlags["mode"], modeFlag, os.Getenv("GOAUTHORLLM_MODE"), localCfg.Mode)
 	cfg.Submode = resolveStringValue(providedFlags["submode"], submodeFlag, os.Getenv("GOAUTHORLLM_SUBMODE"), localCfg.Submode)
 	cfg.Approval = resolveStringValue(providedFlags["approval"], approvalFlag, os.Getenv("GOAUTHORLLM_APPROVAL"), localCfg.Approval)
-	cfg.Guidance, err = resolveTextValue(providedFlags["guidance"], guidanceFlag, providedFlags["guidance-file"], guidanceFileFlag, os.Getenv("GOAUTHORLLM_GUIDANCE"), os.Getenv("GOAUTHORLLM_GUIDANCE_FILE"), localCfg.Guidance, localCfg.GuidanceFile, "generation guidance")
+	cfg.Guidance, err = resolveTextValue(
+		providedFlags["guidance"], guidanceFlag,
+		providedFlags["guidance-file"], guidanceFileFlag,
+		os.Getenv("GOAUTHORLLM_GUIDANCE"), os.Getenv("GOAUTHORLLM_GUIDANCE_FILE"),
+		localCfg.Guidance, localCfg.GuidanceFile,
+		"generation guidance",
+	)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.EditInstructions, err = resolveTextValue(providedFlags["edit-instructions"], editInstructionsFlag, providedFlags["edit-instructions-file"], editInstructionsFileFlag, os.Getenv("GOAUTHORLLM_EDIT_INSTRUCTIONS"), os.Getenv("GOAUTHORLLM_EDIT_INSTRUCTIONS_FILE"), localCfg.EditInstructions, localCfg.EditInstructionsFile, "edit instructions")
+	cfg.EditInstructions, err = resolveTextValue(
+		providedFlags["edit-instructions"], editInstructionsFlag,
+		providedFlags["edit-instructions-file"], editInstructionsFileFlag,
+		os.Getenv("GOAUTHORLLM_EDIT_INSTRUCTIONS"), os.Getenv("GOAUTHORLLM_EDIT_INSTRUCTIONS_FILE"),
+		localCfg.EditInstructions, localCfg.EditInstructionsFile,
+		"edit instructions",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Rules, err = resolveTextValue(
+		false, "",
+		false, "",
+		os.Getenv("GOAUTHORLLM_RULES"), os.Getenv("GOAUTHORLLM_RULES_FILE"),
+		localCfg.Rules, localCfg.RulesFile,
+		"writing rules",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CopyEditRules, err = resolveTextValue(
+		false, "",
+		false, "",
+		os.Getenv("GOAUTHORLLM_COPY_EDIT_RULES"), os.Getenv("GOAUTHORLLM_COPY_EDIT_RULES_FILE"),
+		localCfg.CopyEditRules, localCfg.CopyEditRulesFile,
+		"copy edit rules",
+	)
 	if err != nil {
 		return Config{}, err
 	}
@@ -222,29 +369,183 @@ func Load(args []string) (Config, error) {
 	return cfg, nil
 }
 
-func loadLocalConfig(path string) (localConfigFile, error) {
+// LoadLocal reads and parses a .goauthorllm YAML file.
+// If the file does not exist, an empty LocalFile is returned without error.
+func LoadLocal(path string) (LocalFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return localConfigFile{}, nil
+			return LocalFile{}, nil
 		}
-		return localConfigFile{}, err
+		return LocalFile{}, err
 	}
+	return ParseLocalYAML(string(data), path)
+}
 
-	var raw localConfigFile
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return localConfigFile{}, fmt.Errorf("parse %s: %w", path, err)
+// ParseLocalYAML parses YAML content into a validated LocalFile.
+func ParseLocalYAML(content, label string) (LocalFile, error) {
+	if strings.TrimSpace(content) == "" {
+		return LocalFile{}, nil
+	}
+	var raw LocalFile
+	if err := yaml.Unmarshal([]byte(content), &raw); err != nil {
+		return LocalFile{}, fmt.Errorf("parse %s: %w", label, err)
 	}
 
 	raw.BaseURL = strings.TrimSpace(raw.BaseURL)
 	raw.Model = strings.TrimSpace(raw.Model)
 	raw.GenerationModel = strings.TrimSpace(raw.GenerationModel)
 	raw.EditingModel = strings.TrimSpace(raw.EditingModel)
+	raw.DefaultScope = strings.ToLower(strings.TrimSpace(raw.DefaultScope))
+	raw.Rules = strings.TrimSpace(raw.Rules)
+	raw.CopyEditRules = strings.TrimSpace(raw.CopyEditRules)
 	raw.Mode = strings.TrimSpace(raw.Mode)
 	raw.Submode = strings.TrimSpace(raw.Submode)
 	raw.Approval = strings.TrimSpace(raw.Approval)
 
+	if raw.DefaultScope != "" && !IsValidScope(raw.DefaultScope) {
+		return LocalFile{}, fmt.Errorf("%s: invalid default_scope %q", label, raw.DefaultScope)
+	}
+	if raw.StreamSpeed != nil && *raw.StreamSpeed < 0 {
+		return LocalFile{}, fmt.Errorf("%s: stream_chars_per_sec cannot be negative", label)
+	}
+	if raw.CopyEditBatchSize != nil && *raw.CopyEditBatchSize <= 0 {
+		return LocalFile{}, fmt.Errorf("%s: copy_edit_batch_size must be positive", label)
+	}
+	if raw.DirectedEditBatchSize != nil && *raw.DirectedEditBatchSize <= 0 {
+		return LocalFile{}, fmt.Errorf("%s: directed_edit_batch_size must be positive", label)
+	}
+	for key := range raw.MessageOverrides {
+		if !prompts.Valid(prompts.Name(strings.TrimSpace(key))) {
+			return LocalFile{}, fmt.Errorf("%s: unknown key or prompt name %q", label, key)
+		}
+	}
 	return raw, nil
+}
+
+// RenderLocalYAML serializes a LocalFile into clean YAML.
+func RenderLocalYAML(local LocalFile) (string, error) {
+	cleaned := local
+	if len(cleaned.MessageOverrides) > 0 {
+		filtered := make(map[string]prompts.Override, len(cleaned.MessageOverrides))
+		for k, v := range cleaned.MessageOverrides {
+			if !v.IsZero() {
+				filtered[strings.TrimSpace(k)] = v
+			}
+		}
+		if len(filtered) == 0 {
+			cleaned.MessageOverrides = nil
+		} else {
+			cleaned.MessageOverrides = filtered
+		}
+	}
+	data, err := yaml.Marshal(cleaned)
+	if err != nil {
+		return "", err
+	}
+	text := string(data)
+	if strings.TrimSpace(text) == "{}" {
+		return "", nil
+	}
+	return text, nil
+}
+
+// SaveLocal writes a LocalFile to path cleanly as YAML.
+func SaveLocal(path string, local LocalFile) error {
+	rendered, err := RenderLocalYAML(local)
+	if err != nil {
+		return err
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, []byte(rendered), 0o644)
+}
+
+// ApplyLocal merges settings from an updated LocalFile into an active Config
+// so in-app edits take effect immediately without restarting.
+func (c *Config) ApplyLocal(local LocalFile) error {
+	if local.BaseURL != "" {
+		c.BaseURL = local.BaseURL
+	}
+	if local.Model != "" {
+		c.Model = local.Model
+	}
+	if local.GenerationModel != "" {
+		c.GenerationModel = local.GenerationModel
+	} else {
+		c.GenerationModel = c.Model
+	}
+	if local.EditingModel != "" {
+		c.EditingModel = local.EditingModel
+	} else {
+		c.EditingModel = c.Model
+	}
+	if local.StreamSpeed != nil {
+		c.StreamSpeed = *local.StreamSpeed
+	}
+	if local.DefaultScope != "" {
+		c.DefaultScope = local.DefaultScope
+	}
+	if local.StructuredGeneration != nil {
+		c.StructuredGeneration = *local.StructuredGeneration
+	}
+	if local.CopyEditBatchSize != nil {
+		c.CopyEditBatchSize = *local.CopyEditBatchSize
+	}
+	if local.DirectedEditBatchSize != nil {
+		c.DirectedEditBatchSize = *local.DirectedEditBatchSize
+	}
+	rules, err := resolveTextValue(false, "", false, "", "", "", local.Rules, local.RulesFile, "writing rules")
+	if err != nil {
+		return err
+	}
+	c.Rules = rules
+
+	copyRules, err := resolveTextValue(false, "", false, "", "", "", local.CopyEditRules, local.CopyEditRulesFile, "copy edit rules")
+	if err != nil {
+		return err
+	}
+	c.CopyEditRules = copyRules
+
+	overrides, err := resolveMessageOverrides(local.MessageOverrides, nil, nil)
+	if err != nil {
+		return err
+	}
+	c.MessageOverrides = overrides
+	return nil
+}
+
+// ToLocalFile builds a LocalFile snapshot from the current runtime Config and
+// existing prompt overrides on disk.
+func (c Config) ToLocalFile(existing LocalFile) LocalFile {
+	out := existing
+	out.BaseURL = strings.TrimSpace(c.BaseURL)
+	out.Model = strings.TrimSpace(c.Model)
+	if strings.TrimSpace(c.GenerationModel) != "" && c.GenerationModel != c.Model {
+		out.GenerationModel = strings.TrimSpace(c.GenerationModel)
+	} else {
+		out.GenerationModel = ""
+	}
+	if strings.TrimSpace(c.EditingModel) != "" && c.EditingModel != c.Model {
+		out.EditingModel = strings.TrimSpace(c.EditingModel)
+	} else {
+		out.EditingModel = ""
+	}
+	speed := c.StreamSpeed
+	out.StreamSpeed = &speed
+	out.DefaultScope = c.DefaultScope
+	structured := c.StructuredGeneration
+	out.StructuredGeneration = &structured
+	copyBatch := c.CopyEditBatchSize
+	out.CopyEditBatchSize = &copyBatch
+	dirBatch := c.DirectedEditBatchSize
+	out.DirectedEditBatchSize = &dirBatch
+	out.Rules = strings.TrimSpace(c.Rules)
+	out.CopyEditRules = strings.TrimSpace(c.CopyEditRules)
+	return out
 }
 
 func normalizeMessageOverrides(raw map[string]prompts.Override) prompts.Overrides {
@@ -301,7 +602,7 @@ func resolveMessageOverrides(raw map[string]prompts.Override, replaceFiles, appe
 			}
 			override.Append = text
 		}
-		if override != (prompts.Override{}) {
+		if !override.IsZero() {
 			overrides[name] = override
 		}
 	}
@@ -380,15 +681,17 @@ func validateNonInteractive(cfg Config, fileProvidedOnCommandLine bool) error {
 	approval := strings.ToLower(strings.TrimSpace(cfg.Approval))
 	switch mode {
 	case "generate":
-		if submode != "continue" && submode != "new-section" {
-			return fmt.Errorf("generation --submode must be continue or new-section")
+		switch submode {
+		case "sentence", "paragraph", "section", "free", "continue", "new-section":
+		default:
+			return fmt.Errorf("generation --submode must be sentence, paragraph, section, free, continue, or new-section")
 		}
 	case "edit":
 		if submode != "copy" && submode != "directed" {
 			return fmt.Errorf("editing --submode must be copy or directed")
 		}
-		if approval != "approve-all" && approval != "llm-approved" {
-			return fmt.Errorf("editing --approval must be approve-all or llm-approved; manual approval is not available in non-interactive mode")
+		if approval != "approve-all" {
+			return fmt.Errorf("editing --approval must be approve-all in non-interactive mode")
 		}
 		if submode == "directed" && strings.TrimSpace(cfg.EditInstructions) == "" {
 			return fmt.Errorf("directed editing requires --edit-instructions or --edit-instructions-file")
@@ -455,6 +758,23 @@ func resolveNonNegativeIntValue(flagProvided bool, flagValue int, envValue strin
 		if *fileValue < 0 {
 			return 0, fmt.Errorf("%s cannot be negative", label)
 		}
+		return *fileValue, nil
+	}
+	return defaultValue, nil
+}
+
+func resolveBoolValue(flagProvided bool, flagValue bool, envValue string, fileValue *bool, defaultValue bool, label string) (bool, error) {
+	if flagProvided {
+		return flagValue, nil
+	}
+	if strings.TrimSpace(envValue) != "" {
+		value, err := strconv.ParseBool(strings.TrimSpace(envValue))
+		if err != nil {
+			return false, fmt.Errorf("invalid %s env value %q", label, envValue)
+		}
+		return value, nil
+	}
+	if fileValue != nil {
 		return *fileValue, nil
 	}
 	return defaultValue, nil

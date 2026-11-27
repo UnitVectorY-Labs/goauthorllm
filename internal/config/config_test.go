@@ -331,7 +331,7 @@ func TestLoadReadsOperationalValuesFromEnvironment(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(oldwd) })
 	t.Setenv("GOAUTHORLLM_MODE", "edit")
 	t.Setenv("GOAUTHORLLM_SUBMODE", "directed")
-	t.Setenv("GOAUTHORLLM_APPROVAL", "llm-approved")
+	t.Setenv("GOAUTHORLLM_APPROVAL", "approve-all")
 	t.Setenv("GOAUTHORLLM_EDIT_INSTRUCTIONS_FILE", instructionsPath)
 	t.Setenv("GOAUTHORLLM_MAX_EDITS", "4")
 

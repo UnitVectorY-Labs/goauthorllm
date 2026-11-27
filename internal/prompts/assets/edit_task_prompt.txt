@@ -1,9 +1,11 @@
-Review the next content message, which contains the full current document body, and return high-priority fixes.
-Requirements:
-- old_text must be copied character-for-character from the content message.
-- old_text must match exactly one location in the content message.
-- new_text must be the corrected replacement for that exact excerpt.
-- Prefer the smallest replacement that fully resolves the issue.
-- Suggestions must not overlap one another.
-- remaining_rounds is your conservative estimate of how many further suggestion batches will be useful after this one. Return 0 when this is the final useful batch or when no fixes remain.
-- If no important fixes remain, return an empty suggestions array and 0 for remaining_rounds.
+Review the line-numbered document below and propose up to {{.BatchSize}} non-overlapping copy edits.
+
+Rules for each edit:
+- target_line: 1-based line number where the edit begins (from the `N| ` prefix; never include `N| ` in old_text or new_text).
+- action: "replace" to substitute text, "delete" to remove text/line/paragraph, or "insert_after" to add text immediately after old_text.
+- old_text: exact character-for-character substring from the document (without line-number prefixes). Include enough context to be unambiguous on target_line.
+- new_text: replacement text (for "replace"), text to insert (for "insert_after"), or "" (for "delete"). Preserve markdown formatting and do not drop intended spacing.
+- reason: short 3-10 word explanation of why this edit helps.
+- Keep edits minimal and non-overlapping.
+- Set more_rounds_needed to true only if important fixes remain after this batch.
+- If no worthwhile edits remain, return an empty edits array and more_rounds_needed=false.

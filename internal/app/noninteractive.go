@@ -8,6 +8,7 @@ import (
 
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/config"
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/document"
+	"github.com/UnitVectorY-Labs/goauthorllm/internal/engine"
 	"github.com/UnitVectorY-Labs/goauthorllm/internal/llm"
 )
 
@@ -43,117 +44,158 @@ func RunNonInteractive(cfg config.Config, output io.Writer) (NonInteractiveResul
 }
 
 func runNonInteractiveGeneration(cfg config.Config, client *llm.Client, doc *document.Document, output io.Writer) (NonInteractiveResult, error) {
-	mode := modeContinue
-	if strings.EqualFold(cfg.Submode, "new-section") {
-		mode = modeNewSection
-	}
-	messages, err := buildGenerationMessages(doc.Body, doc.SystemMessage, cfg.Guidance, mode, cfg.MessageOverrides)
-	if err != nil {
-		return NonInteractiveResult{}, err
+	scope := engine.NormalizeScope(cfg.Submode)
+	rounds := max(1, cfg.Rounds)
+
+	baseReq := engine.GenerationRequest{
+		Body:                 doc.Body,
+		DocumentSystemMsg:    doc.SystemMessage,
+		ProjectRules:         cfg.Rules,
+		Guidance:             cfg.Guidance,
+		Scope:                scope,
+		StructuredGeneration: cfg.StructuredGeneration,
+		Overrides:            cfg.MessageOverrides,
 	}
 
-	var generated strings.Builder
-	err = client.StreamChat(context.Background(), messages, func(event llm.StreamEvent) error {
-		if event.Err != nil {
-			return event.Err
+	var plan []engine.PlanStep
+	if rounds > 1 {
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+		steps, err := engine.PlanRounds(ctx, client, baseReq, rounds)
+		cancel()
+		if err == nil {
+			plan = steps
 		}
-		if event.Delta != "" {
-			_, _ = generated.WriteString(event.Delta)
-		}
-		return nil
-	})
-	if err != nil {
-		return NonInteractiveResult{}, fmt.Errorf("generate content: %w", err)
-	}
-	if strings.TrimSpace(generated.String()) == "" {
-		return NonInteractiveResult{}, nil
 	}
 
-	addition := normalizeGenerationStart(doc.Body, generated.String(), mode)
-	doc.SetBody(doc.Body + addition)
-	if err := doc.Save(); err != nil {
-		return NonInteractiveResult{}, fmt.Errorf("save generated content: %w", err)
+	changedRounds := 0
+	for round := 1; round <= rounds; round++ {
+		req := baseReq
+		req.Body = doc.Body
+		req.RoundIndex = round
+		req.RoundTotal = rounds
+		if round-1 < len(plan) {
+			step := plan[round-1]
+			req.RoundStep = &step
+		}
+
+		joinMode := document.JoinAuto
+		var generated strings.Builder
+		err := engine.StreamRound(context.Background(), client, req, func(ev llm.StreamEvent) error {
+			if ev.Err != nil {
+				return ev.Err
+			}
+			if ev.JoinMode != "" {
+				joinMode = document.JoinMode(ev.JoinMode)
+			}
+			if ev.Delta != "" {
+				generated.WriteString(ev.Delta)
+			}
+			return nil
+		})
+		if err != nil {
+			return NonInteractiveResult{Changed: changedRounds}, fmt.Errorf("generate content (round %d/%d): %w", round, rounds, err)
+		}
+		if strings.TrimSpace(generated.String()) == "" {
+			continue
+		}
+
+		addition := document.NormalizeJoinStart(doc.Body, generated.String(), joinMode, string(scope))
+		doc.SetBody(doc.Body + addition)
+		if err := doc.Save(); err != nil {
+			return NonInteractiveResult{Changed: changedRounds}, fmt.Errorf("save generated content: %w", err)
+		}
+		if _, err := fmt.Fprintln(output, addition); err != nil {
+			return NonInteractiveResult{Changed: changedRounds}, fmt.Errorf("log generated content: %w", err)
+		}
+		changedRounds++
 	}
-	if _, err := fmt.Fprintln(output, addition); err != nil {
-		return NonInteractiveResult{}, fmt.Errorf("log generated content: %w", err)
-	}
-	return NonInteractiveResult{Changed: 1}, nil
+
+	return NonInteractiveResult{Changed: changedRounds}, nil
 }
 
 func runNonInteractiveEditing(cfg config.Config, client *llm.Client, doc *document.Document, output io.Writer) (NonInteractiveResult, error) {
-	kind := editKindCopy
+	instructions := ""
 	batchSize := cfg.CopyEditBatchSize
 	if strings.EqualFold(cfg.Submode, "directed") {
-		kind = editKindDirected
+		instructions = cfg.EditInstructions
 		batchSize = cfg.DirectedEditBatchSize
 	}
-	approveWithLLM := strings.EqualFold(cfg.Approval, "llm-approved")
-	history := make([]editHistoryEntry, 0)
+
+	history := make([]engine.EditHistoryEntry, 0)
 	applied := 0
 
 	for {
 		if cfg.MaxEdits > 0 && applied >= cfg.MaxEdits {
 			return NonInteractiveResult{Changed: applied}, nil
 		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
-		result := fetchEditSuggestion(ctx, client, doc.Body, doc.SystemMessage, history, cfg.MessageOverrides, kind, cfg.EditInstructions, batchSize)
+		result := engine.FetchEditBatch(ctx, client, engine.EditRequest{
+			Body:              doc.Body,
+			DocumentSystemMsg: doc.SystemMessage,
+			ProjectRules:      cfg.Rules,
+			CopyEditRules:     cfg.CopyEditRules,
+			Instructions:      instructions,
+			BatchSize:         batchSize,
+			History:           history,
+			Overrides:         cfg.MessageOverrides,
+		})
 		cancel()
+
 		if result.Err != nil {
 			return NonInteractiveResult{Changed: applied}, fmt.Errorf("request edit suggestions: %w", result.Err)
 		}
-		if len(result.Suggestions) == 0 {
+		if len(result.Edits) == 0 {
 			return NonInteractiveResult{Changed: applied}, nil
 		}
 
-		for _, suggestion := range result.Suggestions {
+		roundApplied := 0
+		for _, edit := range result.Edits {
 			if cfg.MaxEdits > 0 && applied >= cfg.MaxEdits {
 				return NonInteractiveResult{Changed: applied}, nil
 			}
-			if approveWithLLM {
-				ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
-				approved, err := approveEditSuggestion(ctx, client, doc.Body, suggestion, kind, cfg.EditInstructions, cfg.MessageOverrides)
-				cancel()
-				if err != nil {
-					return NonInteractiveResult{Changed: applied}, fmt.Errorf("review edit suggestion: %w", err)
-				}
-				if !approved {
-					history = append(history, editHistoryEntry{Action: "llm-rejected", OldText: suggestion.OldText, NewText: suggestion.NewText})
-					continue
-				}
-			}
-
-			updated, ok := document.ReplaceUnique(doc.Body, suggestion.OldText, suggestion.NewText)
+			updated, ok := document.ApplyResolvedEdit(doc.Body, edit)
 			if !ok {
-				return NonInteractiveResult{Changed: applied}, fmt.Errorf("edit became stale: old text no longer matches exactly once")
+				continue
 			}
 			doc.SetBody(updated)
 			if err := doc.Save(); err != nil {
 				return NonInteractiveResult{Changed: applied}, fmt.Errorf("save edit: %w", err)
 			}
-			if err := logEdit(output, suggestion); err != nil {
+			if err := logEdit(output, edit); err != nil {
 				return NonInteractiveResult{Changed: applied}, err
 			}
-			history = append(history, editHistoryEntry{Action: "non-interactive-accepted", OldText: suggestion.OldText, NewText: suggestion.NewText})
+			history = append(history, engine.EditHistoryEntry{
+				Action:  "approved-all",
+				Line:    edit.Line,
+				OldText: edit.OldText,
+				NewText: edit.NewText,
+				Reason:  edit.Reason,
+			})
 			applied++
+			roundApplied++
 		}
 
-		if result.RemainingRounds <= 0 {
+		if !result.MoreRoundsNeeded || roundApplied == 0 {
 			return NonInteractiveResult{Changed: applied}, nil
 		}
 	}
 }
 
-func logEdit(output io.Writer, suggestion editSuggestion) error {
+func logEdit(output io.Writer, edit document.ResolvedEdit) error {
+	if _, err := fmt.Fprintf(output, "@@ line %d (%s) @@\n", edit.Line, edit.Reason); err != nil {
+		return fmt.Errorf("log edit: %w", err)
+	}
 	if _, err := fmt.Fprintln(output, "--- old"); err != nil {
 		return fmt.Errorf("log edit: %w", err)
 	}
-	if _, err := fmt.Fprintln(output, suggestion.OldText); err != nil {
+	if _, err := fmt.Fprintln(output, edit.OldText); err != nil {
 		return fmt.Errorf("log edit: %w", err)
 	}
 	if _, err := fmt.Fprintln(output, "+++ new"); err != nil {
 		return fmt.Errorf("log edit: %w", err)
 	}
-	if _, err := fmt.Fprintln(output, suggestion.NewText); err != nil {
+	if _, err := fmt.Fprintln(output, edit.NewText); err != nil {
 		return fmt.Errorf("log edit: %w", err)
 	}
 	return nil

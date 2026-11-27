@@ -1,6 +1,6 @@
-{{if .HasExcerpt}}Continue writing exactly where the document currently stops inside {{.SectionLabel}}.
-Do not repeat the heading or restart the section.
-Do not summarize prior text.
-The next content message is the exact trailing excerpt; continue from it seamlessly.
-Return only the markdown to append.{{else}}Begin the document in markdown.
-Return only the markdown to append.{{end}}
+{{if .HasDocument}}Continue the markdown document below starting right where it ends.
+Scope: {{.ScopeInstruction}}
+{{if .RoundLabel}}Current step: {{.RoundLabel}}{{end}}
+Do not repeat text already in the document.{{else}}Start this new markdown document.
+Scope: {{.ScopeInstruction}}
+{{if .RoundLabel}}Current step: {{.RoundLabel}}{{end}}{{end}}

@@ -1,2 +1,2 @@
-Additional guidance from the author for this action:
+Author guidance for this generation:
 {{.Prompt}}

@@ -13,26 +13,37 @@ type Name string
 
 const (
 	GeneratePrompt         Name = "generate_prompt"
-	EditPrompt             Name = "edit_prompt"
-	DirectedEditPrompt     Name = "directed_edit_prompt"
-	DirectedEditTaskPrompt Name = "directed_edit_task_prompt"
-	SectionContextPrompt   Name = "section_context_prompt"
 	ContinuePrompt         Name = "continue_prompt"
 	NewSectionPrompt       Name = "new_section_prompt"
+	PlanPrompt             Name = "plan_prompt"
 	UserGuidancePrompt     Name = "user_guidance_prompt"
+	EditPrompt             Name = "edit_prompt"
+	DirectedEditPrompt     Name = "directed_edit_prompt"
 	EditTaskPrompt         Name = "edit_task_prompt"
+	DirectedEditTaskPrompt Name = "directed_edit_task_prompt"
 	EditHistoryPrompt      Name = "edit_history_prompt"
 	EditFeedbackPrompt     Name = "edit_feedback_prompt"
-	EditApprovalPrompt     Name = "edit_approval_prompt"
-	EditRepairPrompt       Name = "edit_repair_prompt"
+
+	// Legacy prompt names retained for backward compatibility with existing .goauthorllm files.
+	SectionContextPrompt Name = "section_context_prompt"
+	EditApprovalPrompt   Name = "edit_approval_prompt"
+	EditRepairPrompt     Name = "edit_repair_prompt"
 )
 
 // Override customizes an embedded prompt.
 type Override struct {
-	Replace     string `yaml:"replace"`
-	Append      string `yaml:"append"`
-	ReplaceFile string `yaml:"replace_file"`
-	AppendFile  string `yaml:"append_file"`
+	Replace     string `yaml:"replace,omitempty"`
+	Append      string `yaml:"append,omitempty"`
+	ReplaceFile string `yaml:"replace_file,omitempty"`
+	AppendFile  string `yaml:"append_file,omitempty"`
+}
+
+// IsZero reports whether the override has no fields set.
+func (o Override) IsZero() bool {
+	return strings.TrimSpace(o.Replace) == "" &&
+		strings.TrimSpace(o.Append) == "" &&
+		strings.TrimSpace(o.ReplaceFile) == "" &&
+		strings.TrimSpace(o.AppendFile) == ""
 }
 
 // Overrides maps prompt names to their customizations.
@@ -42,22 +53,23 @@ type Overrides map[Name]Override
 func Names() []Name {
 	return []Name{
 		GeneratePrompt,
-		EditPrompt,
-		DirectedEditPrompt,
-		DirectedEditTaskPrompt,
-		SectionContextPrompt,
 		ContinuePrompt,
 		NewSectionPrompt,
+		PlanPrompt,
 		UserGuidancePrompt,
+		EditPrompt,
+		DirectedEditPrompt,
 		EditTaskPrompt,
+		DirectedEditTaskPrompt,
 		EditHistoryPrompt,
 		EditFeedbackPrompt,
+		SectionContextPrompt,
 		EditApprovalPrompt,
 		EditRepairPrompt,
 	}
 }
 
-// Valid reports whether name identifies an embedded prompt.
+// Valid reports whether name identifies a supported prompt.
 func Valid(name Name) bool {
 	for _, candidate := range Names() {
 		if name == candidate {
